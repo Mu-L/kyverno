@@ -28,9 +28,9 @@ import (
 
 type KyvernoV2alpha1Interface interface {
 	RESTClient() rest.Interface
-	CleanupPoliciesGetter
-	ClusterCleanupPoliciesGetter
-	PolicyExceptionsGetter
+	CELPolicyExceptionsGetter
+	GlobalContextEntriesGetter
+	ValidatingPoliciesGetter
 }
 
 // KyvernoV2alpha1Client is used to interact with features provided by the kyverno.io group.
@@ -38,16 +38,16 @@ type KyvernoV2alpha1Client struct {
 	restClient rest.Interface
 }
 
-func (c *KyvernoV2alpha1Client) CleanupPolicies(namespace string) CleanupPolicyInterface {
-	return newCleanupPolicies(c, namespace)
+func (c *KyvernoV2alpha1Client) CELPolicyExceptions(namespace string) CELPolicyExceptionInterface {
+	return newCELPolicyExceptions(c, namespace)
 }
 
-func (c *KyvernoV2alpha1Client) ClusterCleanupPolicies() ClusterCleanupPolicyInterface {
-	return newClusterCleanupPolicies(c)
+func (c *KyvernoV2alpha1Client) GlobalContextEntries() GlobalContextEntryInterface {
+	return newGlobalContextEntries(c)
 }
 
-func (c *KyvernoV2alpha1Client) PolicyExceptions(namespace string) PolicyExceptionInterface {
-	return newPolicyExceptions(c, namespace)
+func (c *KyvernoV2alpha1Client) ValidatingPolicies() ValidatingPolicyInterface {
+	return newValidatingPolicies(c)
 }
 
 // NewForConfig creates a new KyvernoV2alpha1Client for the given config.

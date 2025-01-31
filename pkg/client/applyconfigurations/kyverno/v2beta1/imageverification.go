@@ -26,22 +26,33 @@ import (
 // ImageVerificationApplyConfiguration represents an declarative configuration of the ImageVerification type for use
 // with apply.
 type ImageVerificationApplyConfiguration struct {
-	Type                     *v1.ImageVerificationType                             `json:"type,omitempty"`
-	ImageReferences          []string                                              `json:"imageReferences,omitempty"`
-	Attestors                []kyvernov1.AttestorSetApplyConfiguration             `json:"attestors,omitempty"`
-	Attestations             []kyvernov1.AttestationApplyConfiguration             `json:"attestations,omitempty"`
-	Repository               *string                                               `json:"repository,omitempty"`
-	MutateDigest             *bool                                                 `json:"mutateDigest,omitempty"`
-	VerifyDigest             *bool                                                 `json:"verifyDigest,omitempty"`
-	Required                 *bool                                                 `json:"required,omitempty"`
-	ImageRegistryCredentials *kyvernov1.ImageRegistryCredentialsApplyConfiguration `json:"imageRegistryCredentials,omitempty"`
-	UseCache                 *bool                                                 `json:"useCache,omitempty"`
+	FailureAction            *v1.ValidationFailureAction                            `json:"failureAction,omitempty"`
+	Type                     *v1.ImageVerificationType                              `json:"type,omitempty"`
+	ImageReferences          []string                                               `json:"imageReferences,omitempty"`
+	SkipImageReferences      []string                                               `json:"skipImageReferences,omitempty"`
+	Attestors                []kyvernov1.AttestorSetApplyConfiguration              `json:"attestors,omitempty"`
+	Attestations             []kyvernov1.AttestationApplyConfiguration              `json:"attestations,omitempty"`
+	Repository               *string                                                `json:"repository,omitempty"`
+	MutateDigest             *bool                                                  `json:"mutateDigest,omitempty"`
+	VerifyDigest             *bool                                                  `json:"verifyDigest,omitempty"`
+	Validation               *kyvernov1.ValidateImageVerificationApplyConfiguration `json:"validate,omitempty"`
+	Required                 *bool                                                  `json:"required,omitempty"`
+	ImageRegistryCredentials *kyvernov1.ImageRegistryCredentialsApplyConfiguration  `json:"imageRegistryCredentials,omitempty"`
+	UseCache                 *bool                                                  `json:"useCache,omitempty"`
 }
 
 // ImageVerificationApplyConfiguration constructs an declarative configuration of the ImageVerification type for use with
 // apply.
 func ImageVerification() *ImageVerificationApplyConfiguration {
 	return &ImageVerificationApplyConfiguration{}
+}
+
+// WithFailureAction sets the FailureAction field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the FailureAction field is set to the value of the last call.
+func (b *ImageVerificationApplyConfiguration) WithFailureAction(value v1.ValidationFailureAction) *ImageVerificationApplyConfiguration {
+	b.FailureAction = &value
+	return b
 }
 
 // WithType sets the Type field in the declarative configuration to the given value
@@ -58,6 +69,16 @@ func (b *ImageVerificationApplyConfiguration) WithType(value v1.ImageVerificatio
 func (b *ImageVerificationApplyConfiguration) WithImageReferences(values ...string) *ImageVerificationApplyConfiguration {
 	for i := range values {
 		b.ImageReferences = append(b.ImageReferences, values[i])
+	}
+	return b
+}
+
+// WithSkipImageReferences adds the given value to the SkipImageReferences field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the SkipImageReferences field.
+func (b *ImageVerificationApplyConfiguration) WithSkipImageReferences(values ...string) *ImageVerificationApplyConfiguration {
+	for i := range values {
+		b.SkipImageReferences = append(b.SkipImageReferences, values[i])
 	}
 	return b
 }
@@ -109,6 +130,14 @@ func (b *ImageVerificationApplyConfiguration) WithMutateDigest(value bool) *Imag
 // If called multiple times, the VerifyDigest field is set to the value of the last call.
 func (b *ImageVerificationApplyConfiguration) WithVerifyDigest(value bool) *ImageVerificationApplyConfiguration {
 	b.VerifyDigest = &value
+	return b
+}
+
+// WithValidation sets the Validation field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Validation field is set to the value of the last call.
+func (b *ImageVerificationApplyConfiguration) WithValidation(value *kyvernov1.ValidateImageVerificationApplyConfiguration) *ImageVerificationApplyConfiguration {
+	b.Validation = value
 	return b
 }
 

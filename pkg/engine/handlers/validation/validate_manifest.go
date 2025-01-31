@@ -15,6 +15,7 @@ import (
 	"github.com/ghodss/yaml"
 	"github.com/go-logr/logr"
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
+	kyvernov2 "github.com/kyverno/kyverno/api/kyverno/v2"
 	"github.com/kyverno/kyverno/pkg/config"
 	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
 	"github.com/kyverno/kyverno/pkg/engine/handlers"
@@ -25,6 +26,7 @@ import (
 	"go.uber.org/multierr"
 	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/tools/cache"
 )
 
 const (
@@ -55,7 +57,27 @@ func (h validateManifestHandler) Process(
 	resource unstructured.Unstructured,
 	rule kyvernov1.Rule,
 	_ engineapi.EngineContextLoader,
+	exceptions []*kyvernov2.PolicyException,
 ) (unstructured.Unstructured, []engineapi.RuleResponse) {
+	// check if there are policy exceptions that match the incoming resource
+	matchedExceptions := engineutils.MatchesException(exceptions, policyContext, logger)
+	if len(matchedExceptions) > 0 {
+		var keys []string
+		for i, exception := range matchedExceptions {
+			key, err := cache.MetaNamespaceKeyFunc(&matchedExceptions[i])
+			if err != nil {
+				logger.Error(err, "failed to compute policy exception key", "namespace", exception.GetNamespace(), "name", exception.GetName())
+				return resource, handlers.WithError(rule, engineapi.Validation, "failed to compute exception key", err)
+			}
+			keys = append(keys, key)
+		}
+
+		logger.V(3).Info("policy rule is skipped due to policy exceptions", "exceptions", keys)
+		return resource, handlers.WithResponses(
+			engineapi.RuleSkip(rule.Name, engineapi.Validation, "rule is skipped due to policy exceptions"+strings.Join(keys, ", "), rule.ReportProperties).WithExceptions(matchedExceptions),
+		)
+	}
+
 	// verify manifest
 	verified, reason, err := h.verifyManifest(ctx, logger, policyContext, *rule.Validation.Manifests)
 	if err != nil {

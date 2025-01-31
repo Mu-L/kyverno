@@ -18,22 +18,18 @@ limitations under the License.
 
 package v2alpha1
 
-// CleanupPolicyListerExpansion allows custom methods to be added to
-// CleanupPolicyLister.
-type CleanupPolicyListerExpansion interface{}
+// CELPolicyExceptionListerExpansion allows custom methods to be added to
+// CELPolicyExceptionLister.
+type CELPolicyExceptionListerExpansion interface{}
 
-// CleanupPolicyNamespaceListerExpansion allows custom methods to be added to
-// CleanupPolicyNamespaceLister.
-type CleanupPolicyNamespaceListerExpansion interface{}
+// CELPolicyExceptionNamespaceListerExpansion allows custom methods to be added to
+// CELPolicyExceptionNamespaceLister.
+type CELPolicyExceptionNamespaceListerExpansion interface{}
 
-// ClusterCleanupPolicyListerExpansion allows custom methods to be added to
-// ClusterCleanupPolicyLister.
-type ClusterCleanupPolicyListerExpansion interface{}
+// GlobalContextEntryListerExpansion allows custom methods to be added to
+// GlobalContextEntryLister.
+type GlobalContextEntryListerExpansion interface{}
 
-// PolicyExceptionListerExpansion allows custom methods to be added to
-// PolicyExceptionLister.
-type PolicyExceptionListerExpansion interface{}
-
-// PolicyExceptionNamespaceListerExpansion allows custom methods to be added to
-// PolicyExceptionNamespaceLister.
-type PolicyExceptionNamespaceListerExpansion interface{}
+// ValidatingPolicyListerExpansion allows custom methods to be added to
+// ValidatingPolicyLister.
+type ValidatingPolicyListerExpansion interface{}

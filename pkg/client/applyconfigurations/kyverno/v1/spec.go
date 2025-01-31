@@ -30,6 +30,7 @@ type SpecApplyConfiguration struct {
 	FailurePolicy                    *kyvernov1.FailurePolicyType                        `json:"failurePolicy,omitempty"`
 	ValidationFailureAction          *kyvernov1.ValidationFailureAction                  `json:"validationFailureAction,omitempty"`
 	ValidationFailureActionOverrides []ValidationFailureActionOverrideApplyConfiguration `json:"validationFailureActionOverrides,omitempty"`
+	EmitWarning                      *bool                                               `json:"emitWarning,omitempty"`
 	Admission                        *bool                                               `json:"admission,omitempty"`
 	Background                       *bool                                               `json:"background,omitempty"`
 	SchemaValidation                 *bool                                               `json:"schemaValidation,omitempty"`
@@ -38,6 +39,7 @@ type SpecApplyConfiguration struct {
 	GenerateExistingOnPolicyUpdate   *bool                                               `json:"generateExistingOnPolicyUpdate,omitempty"`
 	GenerateExisting                 *bool                                               `json:"generateExisting,omitempty"`
 	UseServerSideApply               *bool                                               `json:"useServerSideApply,omitempty"`
+	WebhookConfiguration             *WebhookConfigurationApplyConfiguration             `json:"webhookConfiguration,omitempty"`
 }
 
 // SpecApplyConfiguration constructs an declarative configuration of the Spec type for use with
@@ -93,6 +95,14 @@ func (b *SpecApplyConfiguration) WithValidationFailureActionOverrides(values ...
 		}
 		b.ValidationFailureActionOverrides = append(b.ValidationFailureActionOverrides, *values[i])
 	}
+	return b
+}
+
+// WithEmitWarning sets the EmitWarning field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the EmitWarning field is set to the value of the last call.
+func (b *SpecApplyConfiguration) WithEmitWarning(value bool) *SpecApplyConfiguration {
+	b.EmitWarning = &value
 	return b
 }
 
@@ -157,5 +167,13 @@ func (b *SpecApplyConfiguration) WithGenerateExisting(value bool) *SpecApplyConf
 // If called multiple times, the UseServerSideApply field is set to the value of the last call.
 func (b *SpecApplyConfiguration) WithUseServerSideApply(value bool) *SpecApplyConfiguration {
 	b.UseServerSideApply = &value
+	return b
+}
+
+// WithWebhookConfiguration sets the WebhookConfiguration field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the WebhookConfiguration field is set to the value of the last call.
+func (b *SpecApplyConfiguration) WithWebhookConfiguration(value *WebhookConfigurationApplyConfiguration) *SpecApplyConfiguration {
+	b.WebhookConfiguration = value
 	return b
 }

@@ -10,6 +10,9 @@ type Toggles interface {
 	ProtectManagedResources() bool
 	ForceFailurePolicyIgnore() bool
 	EnableDeferredLoading() bool
+	GenerateValidatingAdmissionPolicy() bool
+	DumpMutatePatches() bool
+	AutogenV2() bool
 }
 
 type defaultToggles struct{}
@@ -24,6 +27,18 @@ func (defaultToggles) ForceFailurePolicyIgnore() bool {
 
 func (defaultToggles) EnableDeferredLoading() bool {
 	return EnableDeferredLoading.enabled()
+}
+
+func (defaultToggles) GenerateValidatingAdmissionPolicy() bool {
+	return GenerateValidatingAdmissionPolicy.enabled()
+}
+
+func (defaultToggles) DumpMutatePatches() bool {
+	return DumpMutatePatches.enabled()
+}
+
+func (defaultToggles) AutogenV2() bool {
+	return AutogenV2.enabled()
 }
 
 type contextKey struct{}

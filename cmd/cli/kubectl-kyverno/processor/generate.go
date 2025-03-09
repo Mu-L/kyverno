@@ -6,10 +6,10 @@ import (
 	"strings"
 
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
-	kyvernov1beta1 "github.com/kyverno/kyverno/api/kyverno/v1beta1"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/log"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/resource"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/store"
+	"github.com/kyverno/kyverno/pkg/autogen"
 	"github.com/kyverno/kyverno/pkg/background/generate"
 	"github.com/kyverno/kyverno/pkg/clients/dclient"
 	"github.com/kyverno/kyverno/pkg/config"
@@ -18,12 +18,13 @@ import (
 	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
 	"github.com/kyverno/kyverno/pkg/engine/jmespath"
 	"github.com/kyverno/kyverno/pkg/imageverifycache"
+	kubeutils "github.com/kyverno/kyverno/pkg/utils/kube"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/sets"
 )
 
-func handleGeneratePolicy(out io.Writer, generateResponse *engineapi.EngineResponse, policyContext engine.PolicyContext, ruleToCloneSourceResource map[string]string) ([]engineapi.RuleResponse, error) {
+func handleGeneratePolicy(out io.Writer, store *store.Store, generateResponse *engineapi.EngineResponse, policyContext engine.PolicyContext, ruleToCloneSourceResource map[string]string) ([]engineapi.RuleResponse, error) {
 	newResource := policyContext.NewResource()
 	objects := []runtime.Object{&newResource}
 	for _, rule := range generateResponse.PolicyResponse.Rules {
@@ -43,47 +44,64 @@ func handleGeneratePolicy(out io.Writer, generateResponse *engineapi.EngineRespo
 		}
 	}
 
-	c, err := initializeMockController(out, objects)
+	listKinds := map[schema.GroupVersionResource]string{}
+
+	// Collect items in a potential cloneList to provide list kinds to the fake dynamic client.
+	for _, rule := range autogen.Default.ComputeRules(policyContext.Policy(), "") {
+		if !rule.HasGenerate() || len(rule.Generation.CloneList.Kinds) == 0 {
+			continue
+		}
+
+		for _, kind := range rule.Generation.CloneList.Kinds {
+			apiVersion, kind := kubeutils.GetKindFromGVK(kind)
+
+			if apiVersion == "" || kind == "" {
+				continue
+			}
+
+			gv, err := schema.ParseGroupVersion(apiVersion)
+			if err != nil {
+				fmt.Fprintf(out, "failed to parse group and version from clone list kind %s: %v\n", apiVersion, err)
+				continue
+			}
+
+			listKinds[schema.GroupVersionResource{
+				Group:    gv.Group,
+				Version:  gv.Version,
+				Resource: strings.ToLower(kind) + "s",
+			}] = kind + "List"
+		}
+	}
+
+	c, err := initializeMockController(out, store, listKinds, objects)
 	if err != nil {
 		fmt.Fprintln(out, "error at controller")
 		return nil, err
 	}
 
-	gr := kyvernov1beta1.UpdateRequest{
-		Spec: kyvernov1beta1.UpdateRequestSpec{
-			Type:   kyvernov1beta1.Generate,
-			Policy: generateResponse.Policy().GetName(),
-			Resource: kyvernov1.ResourceSpec{
-				Kind:       generateResponse.Resource.GetKind(),
-				Namespace:  generateResponse.Resource.GetNamespace(),
-				Name:       generateResponse.Resource.GetName(),
-				APIVersion: generateResponse.Resource.GetAPIVersion(),
-			},
-		},
-	}
-
-	var newRuleResponse []engineapi.RuleResponse
+	newRuleResponse := []engineapi.RuleResponse{}
 
 	for _, rule := range generateResponse.PolicyResponse.Rules {
-		genResource, err := c.ApplyGeneratePolicy(log.Log.V(2), &policyContext, gr, []string{rule.Name()})
+		genResourceMap, err := c.ApplyGeneratePolicy(log.Log.V(2), &policyContext, []string{rule.Name()})
 		if err != nil {
 			return nil, err
 		}
-
-		if genResource != nil {
-			unstrGenResource, err := c.GetUnstrResource(genResource[0])
-			if err != nil {
-				return nil, err
-			}
-			newRuleResponse = append(newRuleResponse, *rule.WithGeneratedResource(*unstrGenResource))
+		generatedResources := []kyvernov1.ResourceSpec{}
+		for _, v := range genResourceMap {
+			generatedResources = append(generatedResources, v...)
 		}
+		unstrGenResources, err := c.GetUnstrResources(generatedResources)
+		if err != nil {
+			return nil, err
+		}
+		newRuleResponse = append(newRuleResponse, *rule.WithGeneratedResources(unstrGenResources))
 	}
 
 	return newRuleResponse, nil
 }
 
-func initializeMockController(out io.Writer, objects []runtime.Object) (*generate.GenerateController, error) {
-	client, err := dclient.NewFakeClient(runtime.NewScheme(), nil, objects...)
+func initializeMockController(out io.Writer, s *store.Store, gvrToListKind map[schema.GroupVersionResource]string, objects []runtime.Object) (*generate.GenerateController, error) {
+	client, err := dclient.NewFakeClient(runtime.NewScheme(), gvrToListKind, objects...)
 	if err != nil {
 		fmt.Fprintf(out, "Failed to mock dynamic client")
 		return nil, err
@@ -102,9 +120,9 @@ func initializeMockController(out io.Writer, objects []runtime.Object) (*generat
 		adapters.Client(client),
 		nil,
 		imageverifycache.DisabledImageVerifyCache(),
-		store.ContextLoaderFactory(nil),
+		store.ContextLoaderFactory(s, nil),
 		nil,
-		"",
+		nil,
 	))
 	return c, nil
 }

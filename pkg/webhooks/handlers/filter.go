@@ -26,7 +26,7 @@ func (inner AdmissionHandler) WithSubResourceFilter(subresources ...string) Admi
 }
 
 func filtered(ctx context.Context, logger logr.Logger, request AdmissionRequest, message string, keysAndValues ...interface{}) AdmissionResponse {
-	logger.V(2).Info(message, keysAndValues...)
+	logger.V(4).Info(message, keysAndValues...)
 	tracing.SetAttributes(ctx, tracing.RequestFilteredKey.Bool(true))
 	return admissionutils.ResponseSuccess(request.UID)
 }
@@ -39,7 +39,7 @@ func (inner AdmissionHandler) withFilter(c config.Configuration) AdmissionHandle
 		}
 		// filter by resource filters
 		if c.ToFilter(request.GroupVersionKind, request.SubResource, request.Namespace, request.Name) {
-			return filtered(ctx, logger, request, "admission request filtered because it apears in configmap resource filters")
+			return filtered(ctx, logger, request, "admission request filtered because it appears in configmap resource filters")
 		}
 		// filter kyverno resources
 		if webhookutils.ExcludeKyvernoResources(request.Kind.Kind) {

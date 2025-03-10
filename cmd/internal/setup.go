@@ -16,14 +16,17 @@ import (
 	"github.com/kyverno/kyverno/pkg/imageverifycache"
 	"github.com/kyverno/kyverno/pkg/metrics"
 	"github.com/kyverno/kyverno/pkg/registryclient"
+	reportutils "github.com/kyverno/kyverno/pkg/utils/report"
+	eventsv1 "k8s.io/client-go/kubernetes/typed/events/v1"
 	corev1listers "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/rest"
 )
 
 func shutdown(logger logr.Logger, sdowns ...context.CancelFunc) context.CancelFunc {
 	return func() {
 		for i := range sdowns {
 			if sdowns[i] != nil {
-				logger.Info("shutting down...")
+				logger.V(2).Info("shutting down...")
 				defer sdowns[i]()
 			}
 		}
@@ -46,6 +49,10 @@ type SetupResult struct {
 	ApiServerClient        apiserverclient.UpstreamInterface
 	MetadataClient         metadataclient.UpstreamInterface
 	KyvernoDynamicClient   dclient.Interface
+	EventsClient           eventsv1.EventsV1Interface
+	ReportingConfiguration reportutils.ReportingConfiguration
+	ResyncPeriod           time.Duration
+	RestConfig             *rest.Config
 }
 
 func Setup(config Configuration, name string, skipResourceFilters bool) (context.Context, SetupResult, context.CancelFunc) {
@@ -57,7 +64,7 @@ func Setup(config Configuration, name string, skipResourceFilters bool) (context
 	sdownMaxProcs := setupMaxProcs(logger)
 	setupProfiling(logger)
 	ctx, sdownSignals := setupSignals(logger)
-	client := kubeclient.From(createKubernetesClient(logger), kubeclient.WithTracing())
+	client := kubeclient.From(createKubernetesClient(logger, clientRateLimitQPS, clientRateLimitBurst), kubeclient.WithTracing())
 	metricsConfiguration := startMetricsConfigController(ctx, logger, client)
 	metricsManager, sdownMetrics := SetupMetrics(ctx, logger, metricsConfiguration, client)
 	client = client.WithMetrics(metricsManager, metrics.KubeClient)
@@ -70,14 +77,14 @@ func Setup(config Configuration, name string, skipResourceFilters bool) (context
 	}
 	var imageVerifyCache imageverifycache.Client
 	if config.UsesImageVerifyCache() {
-		imageVerifyCache = setupImageVerifyCache(ctx, logger)
+		imageVerifyCache = setupImageVerifyCache(logger)
 	}
 	if config.UsesCosign() {
 		setupSigstoreTUF(ctx, logger)
 	}
 	var leaderElectionClient kubeclient.UpstreamInterface
 	if config.UsesLeaderElection() {
-		leaderElectionClient = createKubernetesClient(logger, kubeclient.WithMetrics(metricsManager, metrics.KubeClient), kubeclient.WithTracing())
+		leaderElectionClient = createKubernetesClient(logger, clientRateLimitQPS, clientRateLimitBurst, kubeclient.WithMetrics(metricsManager, metrics.KubeClient), kubeclient.WithTracing())
 	}
 	var kyvernoClient kyvernoclient.UpstreamInterface
 	if config.UsesKyvernoClient() {
@@ -93,11 +100,23 @@ func Setup(config Configuration, name string, skipResourceFilters bool) (context
 	}
 	var dClient dclient.Interface
 	if config.UsesKyvernoDynamicClient() {
-		dClient = createKyvernoDynamicClient(logger, ctx, dynamicClient, client, 15*time.Minute)
+		dClient = createKyvernoDynamicClient(logger, ctx, dynamicClient, client, resyncPeriod)
+	}
+	var eventsClient eventsv1.EventsV1Interface
+	if config.UsesEventsClient() {
+		eventsClient = createEventsClient(logger, metricsManager)
 	}
 	var metadataClient metadataclient.UpstreamInterface
 	if config.UsesMetadataClient() {
 		metadataClient = createMetadataClient(logger, metadataclient.WithMetrics(metricsManager, metrics.MetadataClient), metadataclient.WithTracing())
+	}
+	var reportingConfig reportutils.ReportingConfiguration
+	if config.UsesReporting() {
+		reportingConfig = setupReporting(logger)
+	}
+	var restConfig *rest.Config
+	if config.UsesRestConfig() {
+		restConfig = createClientConfig(logger, clientRateLimitQPS, clientRateLimitBurst)
 	}
 	return ctx,
 		SetupResult{
@@ -116,6 +135,10 @@ func Setup(config Configuration, name string, skipResourceFilters bool) (context
 			ApiServerClient:        apiServerClient,
 			MetadataClient:         metadataClient,
 			KyvernoDynamicClient:   dClient,
+			EventsClient:           eventsClient,
+			ReportingConfiguration: reportingConfig,
+			ResyncPeriod:           resyncPeriod,
+			RestConfig:             restConfig,
 		},
 		shutdown(logger.WithName("shutdown"), sdownMaxProcs, sdownMetrics, sdownTracing, sdownSignals)
 }

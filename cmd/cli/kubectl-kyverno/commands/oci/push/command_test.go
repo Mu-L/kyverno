@@ -6,18 +6,20 @@ import (
 	"strings"
 	"testing"
 
+	ecr "github.com/awslabs/amazon-ecr-credential-helper/ecr-login"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/authn/github"
-	"github.com/kyverno/kyverno/pkg/registryclient"
+	"github.com/google/go-containerregistry/pkg/v1/google"
+	"github.com/kyverno/kyverno/pkg/imageverification/imagedataloader"
 	"github.com/stretchr/testify/assert"
 )
 
 var keychain = authn.NewMultiKeychain(
 	authn.DefaultKeychain,
 	github.Keychain,
-	registryclient.AWSKeychain,
-	registryclient.GCPKeychain,
-	registryclient.AzureKeychain,
+	authn.NewKeychainFromHelper(ecr.NewECRHelper(ecr.WithLogger(io.Discard))),
+	google.Keychain,
+	imagedataloader.AzureKeychain,
 )
 
 func TestCommandNoImageRef(t *testing.T) {

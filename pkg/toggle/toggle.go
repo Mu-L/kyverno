@@ -21,12 +21,30 @@ const (
 	EnableDeferredLoadingDescription = "enable deferred loading of context variables"
 	enableDeferredLoadingEnvVar      = "FLAG_ENABLE_DEFERRED_LOADING"
 	defaultEnableDeferredLoading     = true
+	// generate validating admission policies
+	GenerateValidatingAdmissionPolicyFlagName    = "generateValidatingAdmissionPolicy"
+	GenerateValidatingAdmissionPolicyDescription = "Set the flag to 'true', to generate validating admission policies."
+	generateValidatingAdmissionPolicyEnvVar      = "FLAG_GENERATE_VALIDATING_ADMISSION_POLICY"
+	defaultGenerateValidatingAdmissionPolicy     = false
+	// dump mutate patches
+	DumpMutatePatchesFlagName    = "dumpPatches"
+	DumpMutatePatchesDescription = "Set the flag to 'true', to dump mutate patches."
+	dumpMutatePatchesEnvVar      = "FLAG_DUMP_PATCHES"
+	defaultDumpMutatePatches     = false
+	// select autogen
+	AutogenV2FlagName    = "autogenV2"
+	AutogenV2Description = "Set the flag to 'true', to enable autogen v2."
+	autogenV2EnvVar      = "FLAG_AUTOGEN_V2"
+	defaultAutogenV2     = false
 )
 
 var (
-	ProtectManagedResources  = newToggle(defaultProtectManagedResources, protectManagedResourcesEnvVar)
-	ForceFailurePolicyIgnore = newToggle(defaultForceFailurePolicyIgnore, forceFailurePolicyIgnoreEnvVar)
-	EnableDeferredLoading    = newToggle(defaultEnableDeferredLoading, enableDeferredLoadingEnvVar)
+	ProtectManagedResources           = newToggle(defaultProtectManagedResources, protectManagedResourcesEnvVar)
+	ForceFailurePolicyIgnore          = newToggle(defaultForceFailurePolicyIgnore, forceFailurePolicyIgnoreEnvVar)
+	EnableDeferredLoading             = newToggle(defaultEnableDeferredLoading, enableDeferredLoadingEnvVar)
+	GenerateValidatingAdmissionPolicy = newToggle(defaultGenerateValidatingAdmissionPolicy, generateValidatingAdmissionPolicyEnvVar)
+	DumpMutatePatches                 = newToggle(defaultDumpMutatePatches, dumpMutatePatchesEnvVar)
+	AutogenV2                         = newToggle(defaultAutogenV2, autogenV2EnvVar)
 )
 
 type ToggleFlag interface {

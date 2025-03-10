@@ -35,8 +35,9 @@ type ObjectClient[T metav1.Object] interface {
 	CreateClient[T]
 	GetClient[T]
 	UpdateClient[T]
-	DeleteClient
 	PatchClient[T]
+	DeleteClient
+	DeleteCollectionClient
 }
 
 type DeleteCollectionClient interface {
@@ -149,17 +150,25 @@ func Update[T interface {
 func UpdateStatus[T interface {
 	metav1.Object
 	DeepCopy[T]
-}, S StatusClient[T]](ctx context.Context, obj T, setter S, build func(T) error,
-) (T, error) {
+}, S ObjectStatusClient[T]](
+	ctx context.Context,
+	obj T,
+	setter S,
+	build func(T) error,
+	cmp func(T, T) bool,
+) error {
 	mutated := obj.DeepCopy()
 	if err := build(mutated); err != nil {
-		var d T
-		return d, err
+		return err
 	} else {
-		if datautils.DeepEqual(obj, mutated) {
-			return mutated, nil
+		if cmp == nil {
+			cmp = datautils.DeepEqual[T]
+		}
+		if cmp(obj, mutated) {
+			return nil
 		} else {
-			return setter.UpdateStatus(ctx, mutated, metav1.UpdateOptions{})
+			_, err := setter.UpdateStatus(ctx, mutated, metav1.UpdateOptions{})
+			return err
 		}
 	}
 }

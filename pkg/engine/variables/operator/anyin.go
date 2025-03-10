@@ -6,10 +6,10 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
+	"github.com/kyverno/kyverno/ext/wildcard"
 	"github.com/kyverno/kyverno/pkg/engine/context"
 	"github.com/kyverno/kyverno/pkg/engine/operator"
 	"github.com/kyverno/kyverno/pkg/engine/pattern"
-	wildcard "github.com/kyverno/kyverno/pkg/utils/wildcard"
 )
 
 // NewAnyInHandler returns handler to manage AnyIn operations
@@ -129,6 +129,14 @@ func anySetExistsInArray(key []string, value interface{}, log logr.Logger, anyNo
 		for _, val := range valuesAvailable {
 			valueSlice = append(valueSlice, fmt.Sprint(val))
 		}
+		if anyNotIn {
+			return false, isAnyNotIn(key, valueSlice)
+		}
+		return false, isAnyIn(key, valueSlice)
+
+	case int, int32, int64, float32, float64, bool:
+		var valueSlice []string
+		valueSlice = append(valueSlice, fmt.Sprint(value))
 		if anyNotIn {
 			return false, isAnyNotIn(key, valueSlice)
 		}

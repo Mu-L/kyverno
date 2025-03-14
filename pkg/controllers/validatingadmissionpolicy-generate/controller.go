@@ -2,26 +2,37 @@ package validatingadmissionpolicygenerate
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
+	kyvernov2 "github.com/kyverno/kyverno/api/kyverno/v2"
+	policiesv1alpha1 "github.com/kyverno/kyverno/api/policies.kyverno.io/v1alpha1"
+	"github.com/kyverno/kyverno/pkg/admissionpolicy"
+	"github.com/kyverno/kyverno/pkg/auth/checker"
 	"github.com/kyverno/kyverno/pkg/client/clientset/versioned"
 	kyvernov1informers "github.com/kyverno/kyverno/pkg/client/informers/externalversions/kyverno/v1"
+	kyvernov2informers "github.com/kyverno/kyverno/pkg/client/informers/externalversions/kyverno/v2"
+	policiesv1alpha1informers "github.com/kyverno/kyverno/pkg/client/informers/externalversions/policies.kyverno.io/v1alpha1"
 	kyvernov1listers "github.com/kyverno/kyverno/pkg/client/listers/kyverno/v1"
+	kyvernov2listers "github.com/kyverno/kyverno/pkg/client/listers/kyverno/v2"
+	policiesv1alpha1listers "github.com/kyverno/kyverno/pkg/client/listers/policies.kyverno.io/v1alpha1"
 	"github.com/kyverno/kyverno/pkg/clients/dclient"
 	"github.com/kyverno/kyverno/pkg/controllers"
+	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
 	"github.com/kyverno/kyverno/pkg/event"
 	"github.com/kyverno/kyverno/pkg/logging"
 	controllerutils "github.com/kyverno/kyverno/pkg/utils/controller"
 	datautils "github.com/kyverno/kyverno/pkg/utils/data"
 	kubeutils "github.com/kyverno/kyverno/pkg/utils/kube"
-	admissionregistrationv1alpha1 "k8s.io/api/admissionregistration/v1alpha1"
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	admissionregistrationv1alpha1informers "k8s.io/client-go/informers/admissionregistration/v1alpha1"
+	admissionregistrationv1informers "k8s.io/client-go/informers/admissionregistration/v1"
 	"k8s.io/client-go/kubernetes"
-	admissionregistrationv1alpha1listers "k8s.io/client-go/listers/admissionregistration/v1alpha1"
+	admissionregistrationv1listers "k8s.io/client-go/listers/admissionregistration/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
 )
@@ -41,35 +52,49 @@ type controller struct {
 
 	// listers
 	cpolLister       kyvernov1listers.ClusterPolicyLister
-	vapLister        admissionregistrationv1alpha1listers.ValidatingAdmissionPolicyLister
-	vapbindingLister admissionregistrationv1alpha1listers.ValidatingAdmissionPolicyBindingLister
+	vpolLister       policiesv1alpha1listers.ValidatingPolicyLister
+	polexLister      kyvernov2listers.PolicyExceptionLister
+	celpolexLister   policiesv1alpha1listers.CELPolicyExceptionLister
+	vapLister        admissionregistrationv1listers.ValidatingAdmissionPolicyLister
+	vapbindingLister admissionregistrationv1listers.ValidatingAdmissionPolicyBindingLister
 
 	// queue
-	queue workqueue.RateLimitingInterface
+	queue workqueue.TypedRateLimitingInterface[any]
 
 	eventGen event.Interface
+	checker  checker.AuthChecker
 }
 
 func NewController(
 	client kubernetes.Interface,
 	kyvernoClient versioned.Interface,
 	discoveryClient dclient.IDiscovery,
-	polInformer kyvernov1informers.PolicyInformer,
 	cpolInformer kyvernov1informers.ClusterPolicyInformer,
-	vapInformer admissionregistrationv1alpha1informers.ValidatingAdmissionPolicyInformer,
-	vapbindingInformer admissionregistrationv1alpha1informers.ValidatingAdmissionPolicyBindingInformer,
+	vpolInformer policiesv1alpha1informers.ValidatingPolicyInformer,
+	polexInformer kyvernov2informers.PolicyExceptionInformer,
+	celpolexInformer policiesv1alpha1informers.CELPolicyExceptionInformer,
+	vapInformer admissionregistrationv1informers.ValidatingAdmissionPolicyInformer,
+	vapbindingInformer admissionregistrationv1informers.ValidatingAdmissionPolicyBindingInformer,
 	eventGen event.Interface,
+	checker checker.AuthChecker,
 ) controllers.Controller {
-	queue := workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), ControllerName)
+	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
+		workqueue.DefaultTypedControllerRateLimiter[any](),
+		workqueue.TypedRateLimitingQueueConfig[any]{Name: ControllerName},
+	)
 	c := &controller{
 		client:           client,
 		kyvernoClient:    kyvernoClient,
 		discoveryClient:  discoveryClient,
 		cpolLister:       cpolInformer.Lister(),
+		vpolLister:       vpolInformer.Lister(),
+		polexLister:      polexInformer.Lister(),
+		celpolexLister:   celpolexInformer.Lister(),
 		vapLister:        vapInformer.Lister(),
 		vapbindingLister: vapbindingInformer.Lister(),
 		queue:            queue,
 		eventGen:         eventGen,
+		checker:          checker,
 	}
 
 	// Set up an event handler for when Kyverno policies change
@@ -77,12 +102,27 @@ func NewController(
 		logger.Error(err, "failed to register event handlers")
 	}
 
-	// Set up an event handler for when validating admission policies change
+	// Set up an event handler for when validating policies change
+	if _, err := controllerutils.AddEventHandlersT(vpolInformer.Informer(), c.addVP, c.updateVP, c.deleteVP); err != nil {
+		logger.Error(err, "failed to register event handlers")
+	}
+
+	// Set up an event handler for when policy exceptions change
+	if _, err := controllerutils.AddEventHandlersT(polexInformer.Informer(), c.addException, c.updateException, c.deleteException); err != nil {
+		logger.Error(err, "failed to register event handlers")
+	}
+
+	// Set up an event handler for when cel policy exceptions change
+	if _, err := controllerutils.AddEventHandlersT(celpolexInformer.Informer(), c.addCELException, c.updateCELException, c.deleteCELException); err != nil {
+		logger.Error(err, "failed to register event handlers")
+	}
+
+	// Set up an event handler for when ValidatingAdmissionPolicies change
 	if _, err := controllerutils.AddEventHandlersT(vapInformer.Informer(), c.addVAP, c.updateVAP, c.deleteVAP); err != nil {
 		logger.Error(err, "failed to register event handlers")
 	}
 
-	// Set up an event handler for when validating admission policy bindings change
+	// Set up an event handler for when ValidatingAdmissionPolicyBindings change
 	if _, err := controllerutils.AddEventHandlersT(vapbindingInformer.Informer(), c.addVAPbinding, c.updateVAPbinding, c.deleteVAPbinding); err != nil {
 		logger.Error(err, "failed to register event handlers")
 	}
@@ -94,8 +134,69 @@ func (c *controller) Run(ctx context.Context, workers int) {
 	controllerutils.Run(ctx, logger, ControllerName, time.Second, c.queue, workers, maxRetries, c.reconcile)
 }
 
+func (c *controller) addVP(obj *policiesv1alpha1.ValidatingPolicy) {
+	logger.V(2).Info("validating policy created", "uid", obj.GetUID(), "kind", obj.GetKind(), "name", obj.GetName())
+	c.enqueueVP(obj)
+}
+
+func (c *controller) updateVP(old, obj *policiesv1alpha1.ValidatingPolicy) {
+	if datautils.DeepEqual(old.GetSpec(), obj.GetSpec()) {
+		return
+	}
+	logger.V(2).Info("validating policy updated", "uid", obj.GetUID(), "kind", obj.GetKind(), "name", obj.GetName())
+	c.enqueueVP(obj)
+}
+
+func (c *controller) deleteVP(obj *policiesv1alpha1.ValidatingPolicy) {
+	vpol := kubeutils.GetObjectWithTombstone(obj).(*policiesv1alpha1.ValidatingPolicy)
+
+	logger.V(2).Info("validating policy deleted", "uid", vpol.GetUID(), "kind", vpol.GetKind(), "name", vpol.GetName())
+	c.enqueueVP(obj)
+}
+
+func (c *controller) enqueueVP(obj *policiesv1alpha1.ValidatingPolicy) {
+	key, err := cache.MetaNamespaceKeyFunc(obj)
+	if err != nil {
+		logger.Error(err, "failed to extract policy name")
+		return
+	}
+	c.queue.Add("ValidatingPolicy/" + key)
+}
+
+func (c *controller) addCELException(obj *policiesv1alpha1.CELPolicyException) {
+	logger.V(2).Info("policy exception created", "uid", obj.GetUID(), "kind", obj.GetKind(), "name", obj.GetName())
+	c.enqueueCELException(obj)
+}
+
+func (c *controller) updateCELException(old, obj *policiesv1alpha1.CELPolicyException) {
+	if datautils.DeepEqual(old.Spec, obj.Spec) {
+		return
+	}
+	logger.V(2).Info("policy exception updated", "uid", obj.GetUID(), "kind", obj.GetKind(), "name", obj.GetName())
+	c.enqueueCELException(obj)
+}
+
+func (c *controller) deleteCELException(obj *policiesv1alpha1.CELPolicyException) {
+	polex := kubeutils.GetObjectWithTombstone(obj).(*policiesv1alpha1.CELPolicyException)
+
+	logger.V(2).Info("policy exception deleted", "uid", polex.GetUID(), "kind", polex.GetKind(), "name", polex.GetName())
+	c.enqueueCELException(obj)
+}
+
+func (c *controller) enqueueCELException(obj *policiesv1alpha1.CELPolicyException) {
+	for _, policy := range obj.Spec.PolicyRefs {
+		if policy.Kind == "ValidatingPolicy" {
+			vpol, err := c.getValidatingPolicy(policy.Name)
+			if err != nil {
+				return
+			}
+			c.enqueueVP(vpol)
+		}
+	}
+}
+
 func (c *controller) addPolicy(obj kyvernov1.PolicyInterface) {
-	logger.Info("policy created", "uid", obj.GetUID(), "kind", obj.GetKind(), "name", obj.GetName())
+	logger.V(2).Info("policy created", "uid", obj.GetUID(), "kind", obj.GetKind(), "name", obj.GetName())
 	c.enqueuePolicy(obj)
 }
 
@@ -103,7 +204,7 @@ func (c *controller) updatePolicy(old, obj kyvernov1.PolicyInterface) {
 	if datautils.DeepEqual(old.GetSpec(), obj.GetSpec()) {
 		return
 	}
-	logger.Info("policy updated", "uid", obj.GetUID(), "kind", obj.GetKind(), "name", obj.GetName())
+	logger.V(2).Info("policy updated", "uid", obj.GetUID(), "kind", obj.GetKind(), "name", obj.GetName())
 	c.enqueuePolicy(obj)
 }
 
@@ -118,7 +219,7 @@ func (c *controller) deletePolicy(obj kyvernov1.PolicyInterface) {
 		return
 	}
 
-	logger.Info("policy deleted", "uid", p.GetUID(), "kind", p.GetKind(), "name", p.GetName())
+	logger.V(2).Info("policy deleted", "uid", p.GetUID(), "kind", p.GetKind(), "name", p.GetName())
 	c.enqueuePolicy(obj)
 }
 
@@ -128,25 +229,65 @@ func (c *controller) enqueuePolicy(obj kyvernov1.PolicyInterface) {
 		logger.Error(err, "failed to extract policy name")
 		return
 	}
-	c.queue.Add(key)
+	c.queue.Add("ClusterPolicy/" + key)
 }
 
-func (c *controller) addVAP(obj *admissionregistrationv1alpha1.ValidatingAdmissionPolicy) {
+func (c *controller) addException(obj *kyvernov2.PolicyException) {
+	logger.V(2).Info("policy exception created", "uid", obj.GetUID(), "kind", obj.GetKind(), "name", obj.GetName())
+	c.enqueueException(obj)
+}
+
+func (c *controller) updateException(old, obj *kyvernov2.PolicyException) {
+	if datautils.DeepEqual(old.Spec, obj.Spec) {
+		return
+	}
+	logger.V(2).Info("policy exception updated", "uid", obj.GetUID(), "kind", obj.GetKind(), "name", obj.GetName())
+	c.enqueueException(obj)
+}
+
+func (c *controller) deleteException(obj *kyvernov2.PolicyException) {
+	polex := kubeutils.GetObjectWithTombstone(obj).(*kyvernov2.PolicyException)
+
+	logger.V(2).Info("policy exception deleted", "uid", polex.GetUID(), "kind", polex.GetKind(), "name", polex.GetName())
+	c.enqueueException(obj)
+}
+
+func (c *controller) enqueueException(obj *kyvernov2.PolicyException) {
+	for _, exception := range obj.Spec.Exceptions {
+		// skip adding namespaced policies in the queue.
+		// skip adding policies with multiple rules in the queue.
+		if strings.Contains(exception.PolicyName, "/") || len(exception.RuleNames) > 1 {
+			continue
+		}
+
+		cpol, err := c.getClusterPolicy(exception.PolicyName)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return
+			}
+			logger.Error(err, "unable to get the policy from policy informer")
+			return
+		}
+		c.enqueuePolicy(cpol)
+	}
+}
+
+func (c *controller) addVAP(obj *admissionregistrationv1.ValidatingAdmissionPolicy) {
 	c.enqueueVAP(obj)
 }
 
-func (c *controller) updateVAP(old, obj *admissionregistrationv1alpha1.ValidatingAdmissionPolicy) {
+func (c *controller) updateVAP(old, obj *admissionregistrationv1.ValidatingAdmissionPolicy) {
 	if datautils.DeepEqual(old.Spec, obj.Spec) {
 		return
 	}
 	c.enqueueVAP(obj)
 }
 
-func (c *controller) deleteVAP(obj *admissionregistrationv1alpha1.ValidatingAdmissionPolicy) {
+func (c *controller) deleteVAP(obj *admissionregistrationv1.ValidatingAdmissionPolicy) {
 	c.enqueueVAP(obj)
 }
 
-func (c *controller) enqueueVAP(v *admissionregistrationv1alpha1.ValidatingAdmissionPolicy) {
+func (c *controller) enqueueVAP(v *admissionregistrationv1.ValidatingAdmissionPolicy) {
 	if len(v.OwnerReferences) == 1 {
 		if v.OwnerReferences[0].Kind == "ClusterPolicy" {
 			cpol, err := c.cpolLister.Get(v.OwnerReferences[0].Name)
@@ -154,26 +295,32 @@ func (c *controller) enqueueVAP(v *admissionregistrationv1alpha1.ValidatingAdmis
 				return
 			}
 			c.enqueuePolicy(cpol)
+		} else if v.OwnerReferences[0].Kind == "ValidatingPolicy" {
+			vpol, err := c.vpolLister.Get(v.OwnerReferences[0].Name)
+			if err != nil {
+				return
+			}
+			c.enqueueVP(vpol)
 		}
 	}
 }
 
-func (c *controller) addVAPbinding(obj *admissionregistrationv1alpha1.ValidatingAdmissionPolicyBinding) {
+func (c *controller) addVAPbinding(obj *admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
 	c.enqueueVAPbinding(obj)
 }
 
-func (c *controller) updateVAPbinding(old, obj *admissionregistrationv1alpha1.ValidatingAdmissionPolicyBinding) {
+func (c *controller) updateVAPbinding(old, obj *admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
 	if datautils.DeepEqual(old.Spec, obj.Spec) {
 		return
 	}
 	c.enqueueVAPbinding(obj)
 }
 
-func (c *controller) deleteVAPbinding(obj *admissionregistrationv1alpha1.ValidatingAdmissionPolicyBinding) {
+func (c *controller) deleteVAPbinding(obj *admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
 	c.enqueueVAPbinding(obj)
 }
 
-func (c *controller) enqueueVAPbinding(vb *admissionregistrationv1alpha1.ValidatingAdmissionPolicyBinding) {
+func (c *controller) enqueueVAPbinding(vb *admissionregistrationv1.ValidatingAdmissionPolicyBinding) {
 	if len(vb.OwnerReferences) == 1 {
 		if vb.OwnerReferences[0].Kind == "ClusterPolicy" {
 			cpol, err := c.cpolLister.Get(vb.OwnerReferences[0].Name)
@@ -181,226 +328,205 @@ func (c *controller) enqueueVAPbinding(vb *admissionregistrationv1alpha1.Validat
 				return
 			}
 			c.enqueuePolicy(cpol)
+		} else if vb.OwnerReferences[0].Kind == "ValidatingPolicy" {
+			vpol, err := c.vpolLister.Get(vb.OwnerReferences[0].Name)
+			if err != nil {
+				return
+			}
+			c.enqueueVP(vpol)
 		}
 	}
-}
-
-func (c *controller) getClusterPolicy(name string) (*kyvernov1.ClusterPolicy, error) {
-	cpolicy, err := c.cpolLister.Get(name)
-	if err != nil {
-		return nil, err
-	}
-	return cpolicy, nil
-}
-
-func (c *controller) getValidatingAdmissionPolicy(name string) (*admissionregistrationv1alpha1.ValidatingAdmissionPolicy, error) {
-	vap, err := c.vapLister.Get(name)
-	if err != nil {
-		return nil, err
-	}
-	return vap, nil
-}
-
-func (c *controller) getValidatingAdmissionPolicyBinding(name string) (*admissionregistrationv1alpha1.ValidatingAdmissionPolicyBinding, error) {
-	vapbinding, err := c.vapbindingLister.Get(name)
-	if err != nil {
-		return nil, err
-	}
-	return vapbinding, nil
-}
-
-func (c *controller) buildValidatingAdmissionPolicy(vap *admissionregistrationv1alpha1.ValidatingAdmissionPolicy, cpol kyvernov1.PolicyInterface) error {
-	// set owner reference
-	vap.OwnerReferences = []metav1.OwnerReference{
-		{
-			APIVersion: "kyverno.io/v1",
-			Kind:       cpol.GetKind(),
-			Name:       cpol.GetName(),
-			UID:        cpol.GetUID(),
-		},
-	}
-
-	// construct validating admission policy resource rules
-	var matchResources admissionregistrationv1alpha1.MatchResources
-	var matchRules []admissionregistrationv1alpha1.NamedRuleWithOperations
-
-	rule := cpol.GetSpec().Rules[0]
-	match := rule.MatchResources
-	if !match.ResourceDescription.IsEmpty() {
-		if err := c.translateResource(&matchResources, &matchRules, match.ResourceDescription); err != nil {
-			return err
-		}
-	}
-
-	if match.Any != nil {
-		if err := c.translateResourceFilters(&matchResources, &matchRules, match.Any); err != nil {
-			return err
-		}
-	}
-	if match.All != nil {
-		if err := c.translateResourceFilters(&matchResources, &matchRules, match.All); err != nil {
-			return err
-		}
-	}
-
-	// set validating admission policy spec
-	vap.Spec = admissionregistrationv1alpha1.ValidatingAdmissionPolicySpec{
-		MatchConstraints: &matchResources,
-		ParamKind:        rule.Validation.CEL.ParamKind,
-		Variables:        rule.Validation.CEL.Variables,
-		Validations:      rule.Validation.CEL.Expressions,
-		AuditAnnotations: rule.Validation.CEL.AuditAnnotations,
-		MatchConditions:  rule.CELPreconditions,
-	}
-
-	// set labels
-	controllerutils.SetManagedByKyvernoLabel(vap)
-	return nil
-}
-
-func (c *controller) buildValidatingAdmissionPolicyBinding(vapbinding *admissionregistrationv1alpha1.ValidatingAdmissionPolicyBinding, cpol kyvernov1.PolicyInterface) error {
-	// set owner reference
-	vapbinding.OwnerReferences = []metav1.OwnerReference{
-		{
-			APIVersion: "kyverno.io/v1",
-			Kind:       cpol.GetKind(),
-			Name:       cpol.GetName(),
-			UID:        cpol.GetUID(),
-		},
-	}
-
-	// set validation action for vap binding
-	var validationActions []admissionregistrationv1alpha1.ValidationAction
-	action := cpol.GetSpec().ValidationFailureAction
-	if action.Enforce() {
-		validationActions = append(validationActions, admissionregistrationv1alpha1.Deny)
-	} else if action.Audit() {
-		validationActions = append(validationActions, admissionregistrationv1alpha1.Audit)
-		validationActions = append(validationActions, admissionregistrationv1alpha1.Warn)
-	}
-
-	// set validating admission policy binding spec
-	rule := cpol.GetSpec().Rules[0]
-	vapbinding.Spec = admissionregistrationv1alpha1.ValidatingAdmissionPolicyBindingSpec{
-		PolicyName:        cpol.GetName(),
-		ParamRef:          rule.Validation.CEL.ParamRef,
-		ValidationActions: validationActions,
-	}
-
-	// set labels
-	controllerutils.SetManagedByKyvernoLabel(vapbinding)
-	return nil
 }
 
 func (c *controller) reconcile(ctx context.Context, logger logr.Logger, key, namespace, name string) error {
-	policy, err := c.getClusterPolicy(name)
-	if err != nil {
-		if apierrors.IsNotFound(err) {
+	var policy engineapi.GenericPolicy
+	var vapName string
+	genericExceptions := make([]engineapi.GenericException, 0)
+
+	polType := strings.Split(key, "/")[0]
+	if polType == "ClusterPolicy" {
+		cpol, err := c.getClusterPolicy(name)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			logger.Error(err, "unable to get the policy from policy informer")
+			return err
+		}
+		spec := cpol.GetSpec()
+		if !spec.HasValidate() {
 			return nil
 		}
-		logger.Error(err, "unable to get the policy from policy informer")
-		return err
-	}
-
-	spec := policy.GetSpec()
-	if !spec.HasValidate() {
-		return nil
-	}
-
-	if ok, msg := canGenerateVAP(spec); !ok {
-		c.updateClusterPolicyStatus(ctx, *policy, false, msg)
-		return nil
-	}
-
-	polName := policy.GetName()
-	observedVAP, err := c.getValidatingAdmissionPolicy(polName)
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			c.updateClusterPolicyStatus(ctx, *policy, false, err.Error())
+		policy = engineapi.NewKyvernoPolicy(cpol)
+		vapName = "cpol-" + policy.GetName()
+	} else {
+		vpol, err := c.getValidatingPolicy(name)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			logger.Error(err, "unable to get the policy from policy informer")
 			return err
 		}
-		observedVAP = &admissionregistrationv1alpha1.ValidatingAdmissionPolicy{
+		policy = engineapi.NewValidatingPolicy(vpol)
+		vapName = "vpol-" + policy.GetName()
+	}
+
+	// check if the controller has the required permissions to generate ValidatingAdmissionPolicies.
+	if !admissionpolicy.HasValidatingAdmissionPolicyPermission(c.checker) {
+		logger.V(2).Info("insufficient permissions to generate ValidatingAdmissionPolicies")
+		c.updatePolicyStatus(ctx, policy, false, "insufficient permissions to generate ValidatingAdmissionPolicies")
+		return nil
+	}
+	// check if the controller has the required permissions to generate ValidatingAdmissionPolicyBindings.
+	if !admissionpolicy.HasValidatingAdmissionPolicyBindingPermission(c.checker) {
+		logger.V(2).Info("insufficient permissions to generate ValidatingAdmissionPolicyBindings")
+		c.updatePolicyStatus(ctx, policy, false, "insufficient permissions to generate ValidatingAdmissionPolicyBindings")
+		return nil
+	}
+
+	vapBindingName := constructVapBindingName(vapName)
+	// get the ValidatingAdmissionPolicy and ValidatingAdmissionPolicyBinding if exists.
+	observedVAP, vapErr := c.getValidatingAdmissionPolicy(vapName)
+	observedVAPbinding, vapBindingErr := c.getValidatingAdmissionPolicyBinding(vapBindingName)
+
+	// in case of clusterpolicies, check if we can generate a VAP from it.
+	if polType == "ClusterPolicy" {
+		spec := policy.AsKyvernoPolicy().GetSpec()
+		exceptions, err := c.getExceptions(name, spec.Rules[0].Name)
+		if err != nil {
+			return err
+		}
+
+		if ok, msg := admissionpolicy.CanGenerateVAP(spec, exceptions, false); !ok {
+			// delete the ValidatingAdmissionPolicy if exist
+			if vapErr == nil {
+				err = c.client.AdmissionregistrationV1().ValidatingAdmissionPolicies().Delete(ctx, vapName, metav1.DeleteOptions{})
+				if err != nil {
+					return err
+				}
+			}
+			// delete the ValidatingAdmissionPolicyBinding if exist
+			if vapBindingErr == nil {
+				err = c.client.AdmissionregistrationV1().ValidatingAdmissionPolicyBindings().Delete(ctx, vapBindingName, metav1.DeleteOptions{})
+				if err != nil {
+					return err
+				}
+			}
+
+			if msg == "" {
+				msg = "skip generating ValidatingAdmissionPolicy: a policy exception is configured."
+			}
+			c.updatePolicyStatus(ctx, policy, false, msg)
+			return nil
+		}
+		for _, exception := range exceptions {
+			genericExceptions = append(genericExceptions, engineapi.NewPolicyException(&exception))
+		}
+	}
+
+	if vapErr != nil {
+		if !apierrors.IsNotFound(vapErr) {
+			return fmt.Errorf("failed to get validatingadmissionpolicy %s: %v", vapName, vapErr)
+		}
+		observedVAP = &admissionregistrationv1.ValidatingAdmissionPolicy{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: polName,
+				Name: vapName,
+			},
+		}
+	}
+	if vapBindingErr != nil {
+		if !apierrors.IsNotFound(vapBindingErr) {
+			return fmt.Errorf("failed to get validatingadmissionpolicybinding %s: %v", vapBindingName, vapBindingErr)
+		}
+		observedVAPbinding = &admissionregistrationv1.ValidatingAdmissionPolicyBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: vapBindingName,
 			},
 		}
 	}
 
-	observedVAPbinding, err := c.getValidatingAdmissionPolicyBinding(polName + "-binding")
+	celexceptions, err := c.getCELExceptions(name)
 	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			c.updateClusterPolicyStatus(ctx, *policy, false, err.Error())
-			return err
-		}
-		observedVAPbinding = &admissionregistrationv1alpha1.ValidatingAdmissionPolicyBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: polName + "-binding",
-			},
-		}
+		return fmt.Errorf("failed to get celexceptions by name %s: %v", name, err)
+	}
+	for _, exception := range celexceptions {
+		genericExceptions = append(genericExceptions, engineapi.NewCELPolicyException(&exception))
 	}
 
 	if observedVAP.ResourceVersion == "" {
-		err := c.buildValidatingAdmissionPolicy(observedVAP, policy)
+		err := admissionpolicy.BuildValidatingAdmissionPolicy(c.discoveryClient, observedVAP, policy, genericExceptions)
 		if err != nil {
-			c.updateClusterPolicyStatus(ctx, *policy, false, err.Error())
-			return err
+			return fmt.Errorf("failed to build validatingadmissionpolicy %s: %v", observedVAP.GetName(), err)
 		}
-		_, err = c.client.AdmissionregistrationV1alpha1().ValidatingAdmissionPolicies().Create(ctx, observedVAP, metav1.CreateOptions{})
+		_, err = c.client.AdmissionregistrationV1().ValidatingAdmissionPolicies().Create(ctx, observedVAP, metav1.CreateOptions{})
 		if err != nil {
-			c.updateClusterPolicyStatus(ctx, *policy, false, err.Error())
-			return err
+			return fmt.Errorf("failed to create validatingadmissionpolicy %s: %v", observedVAP.GetName(), err)
 		}
 	} else {
-		_, err = controllerutils.Update(
+		_, err := controllerutils.Update(
 			ctx,
 			observedVAP,
-			c.client.AdmissionregistrationV1alpha1().ValidatingAdmissionPolicies(),
-			func(observed *admissionregistrationv1alpha1.ValidatingAdmissionPolicy) error {
-				return c.buildValidatingAdmissionPolicy(observed, policy)
+			c.client.AdmissionregistrationV1().ValidatingAdmissionPolicies(),
+			func(observed *admissionregistrationv1.ValidatingAdmissionPolicy) error {
+				return admissionpolicy.BuildValidatingAdmissionPolicy(c.discoveryClient, observed, policy, genericExceptions)
 			})
 		if err != nil {
-			c.updateClusterPolicyStatus(ctx, *policy, false, err.Error())
-			return err
+			return fmt.Errorf("failed to update validatingadmissionpolicy %s: %v", observedVAP.GetName(), err)
 		}
 	}
 
 	if observedVAPbinding.ResourceVersion == "" {
-		err := c.buildValidatingAdmissionPolicyBinding(observedVAPbinding, policy)
+		err := admissionpolicy.BuildValidatingAdmissionPolicyBinding(observedVAPbinding, policy)
 		if err != nil {
-			c.updateClusterPolicyStatus(ctx, *policy, false, err.Error())
-			return err
+			return fmt.Errorf("failed to build validatingadmissionpolicybinding %s: %v", observedVAPbinding.GetName(), err)
 		}
-		_, err = c.client.AdmissionregistrationV1alpha1().ValidatingAdmissionPolicyBindings().Create(ctx, observedVAPbinding, metav1.CreateOptions{})
+		_, err = c.client.AdmissionregistrationV1().ValidatingAdmissionPolicyBindings().Create(ctx, observedVAPbinding, metav1.CreateOptions{})
 		if err != nil {
-			c.updateClusterPolicyStatus(ctx, *policy, false, err.Error())
-			return err
+			return fmt.Errorf("failed to create validatingadmissionpolicybinding %s: %v", observedVAPbinding.GetName(), err)
 		}
 	} else {
-		_, err = controllerutils.Update(
+		_, err := controllerutils.Update(
 			ctx,
 			observedVAPbinding,
-			c.client.AdmissionregistrationV1alpha1().ValidatingAdmissionPolicyBindings(),
-			func(observed *admissionregistrationv1alpha1.ValidatingAdmissionPolicyBinding) error {
-				return c.buildValidatingAdmissionPolicyBinding(observed, policy)
+			c.client.AdmissionregistrationV1().ValidatingAdmissionPolicyBindings(),
+			func(observed *admissionregistrationv1.ValidatingAdmissionPolicyBinding) error {
+				return admissionpolicy.BuildValidatingAdmissionPolicyBinding(observed, policy)
 			})
 		if err != nil {
-			c.updateClusterPolicyStatus(ctx, *policy, false, err.Error())
-			return err
+			return fmt.Errorf("failed to update validatingadmissionpolicybinding %s: %v", observedVAPbinding.GetName(), err)
 		}
 	}
 
-	c.updateClusterPolicyStatus(ctx, *policy, true, "")
+	c.updatePolicyStatus(ctx, policy, true, "")
 	// generate events
 	e := event.NewValidatingAdmissionPolicyEvent(policy, observedVAP.Name, observedVAPbinding.Name)
 	c.eventGen.Add(e...)
 	return nil
 }
 
-func (c *controller) updateClusterPolicyStatus(ctx context.Context, cpol kyvernov1.ClusterPolicy, generated bool, msg string) {
-	latest := cpol.DeepCopy()
-	latest.Status.ValidatingAdmissionPolicy.Generated = generated
-	latest.Status.ValidatingAdmissionPolicy.Message = msg
+func (c *controller) updatePolicyStatus(ctx context.Context, policy engineapi.GenericPolicy, generated bool, msg string) {
+	if pol := policy.AsKyvernoPolicy(); pol != nil {
+		cpol := pol.(*kyvernov1.ClusterPolicy)
+		latest := cpol.DeepCopy()
+		latest.Status.ValidatingAdmissionPolicy.Generated = generated
+		latest.Status.ValidatingAdmissionPolicy.Message = msg
 
-	new, _ := c.kyvernoClient.KyvernoV1().ClusterPolicies().UpdateStatus(ctx, latest, metav1.UpdateOptions{})
-	logging.V(3).Info("updated kyverno policy status", "name", cpol.GetName(), "status", new.Status)
+		new, err := c.kyvernoClient.KyvernoV1().ClusterPolicies().UpdateStatus(ctx, latest, metav1.UpdateOptions{})
+		if err != nil {
+			logging.Error(err, "failed to update cluster policy status", cpol.GetName(), "status", new.Status)
+		}
+		logging.V(3).Info("updated cluster policy status", "name", cpol.GetName(), "status", new.Status)
+	} else if vpol := policy.AsValidatingPolicy(); vpol != nil {
+		latest := vpol.DeepCopy()
+		latest.Status.Generated = generated
+		latest.Status.GetConditionStatus().Message = msg
+
+		new, err := c.kyvernoClient.PoliciesV1alpha1().ValidatingPolicies().UpdateStatus(ctx, latest, metav1.UpdateOptions{})
+		if err != nil {
+			logging.Error(err, "failed to update validating policy status", vpol.GetName(), "status", new.Status)
+		}
+
+		logging.V(3).Info("updated validating policy status", "name", vpol.GetName(), "status", new.Status)
+	}
 }

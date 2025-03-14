@@ -1,6 +1,7 @@
 package config
 
 import (
+	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -77,30 +78,44 @@ func (mcd *metricsConfig) GetBucketBoundaries() []float64 {
 func (mcd *metricsConfig) BuildMeterProviderViews() []sdkmetric.View {
 	mcd.mux.RLock()
 	defer mcd.mux.RUnlock()
-	var views []sdkmetric.View
-	for key, value := range mcd.metricsExposure {
-		if *value.Enabled {
-			views = append(views, sdkmetric.NewView(
-				sdkmetric.Instrument{Name: key},
-				sdkmetric.Stream{
-					AttributeFilter: func(kv attribute.KeyValue) bool {
-						return !slices.Contains(value.DisabledLabelDimensions, string(kv.Key))
-					},
-					Aggregation: sdkmetric.AggregationExplicitBucketHistogram{
-						Boundaries: value.BucketBoundaries,
-						NoMinMax:   false,
-					},
-				},
-			))
-		} else if !*value.Enabled {
-			views = append(views, sdkmetric.NewView(
-				sdkmetric.Instrument{Name: key},
-				sdkmetric.Stream{
-					Aggregation: sdkmetric.AggregationDrop{},
-				},
-			))
-		}
+
+	views := []sdkmetric.View{}
+
+	if len(mcd.metricsExposure) > 0 {
+		metricsExposure := maps.Clone(mcd.metricsExposure)
+		views = append(views, func(i sdkmetric.Instrument) (sdkmetric.Stream, bool) {
+			s := sdkmetric.Stream{Name: i.Name, Description: i.Description, Unit: i.Unit}
+
+			config, exists := metricsExposure[i.Name]
+			if !exists {
+				return s, false
+			}
+
+			if config.Enabled != nil && !*config.Enabled {
+				s.Aggregation = sdkmetric.AggregationDrop{}
+				return s, true
+			}
+
+			if len(config.DisabledLabelDimensions) > 0 {
+				s.AttributeFilter = func(kv attribute.KeyValue) bool {
+					return !slices.Contains(config.DisabledLabelDimensions, string(kv.Key))
+				}
+			}
+
+			if len(config.BucketBoundaries) > 0 {
+				aggregation := sdkmetric.DefaultAggregationSelector(i.Kind)
+				switch a := aggregation.(type) {
+				case sdkmetric.AggregationExplicitBucketHistogram:
+					a.Boundaries = config.BucketBoundaries
+					a.NoMinMax = false
+					s.Aggregation = a
+				}
+			}
+
+			return s, true
+		})
 	}
+
 	return views
 }
 
@@ -150,7 +165,7 @@ func (cd *metricsConfig) load(cm *corev1.ConfigMap) {
 	// load metricsRefreshInterval
 	metricsRefreshInterval, ok := data["metricsRefreshInterval"]
 	if !ok {
-		logger.Info("metricsRefreshInterval not set")
+		logger.V(4).Info("metricsRefreshInterval not set")
 	} else {
 		logger := logger.WithValues("metricsRefreshInterval", metricsRefreshInterval)
 		metricsRefreshInterval, err := time.ParseDuration(metricsRefreshInterval)
@@ -158,13 +173,13 @@ func (cd *metricsConfig) load(cm *corev1.ConfigMap) {
 			logger.Error(err, "failed to parse metricsRefreshInterval")
 		} else {
 			cd.metricsRefreshInterval = metricsRefreshInterval
-			logger.Info("metricsRefreshInterval configured")
+			logger.V(4).Info("metricsRefreshInterval configured")
 		}
 	}
 	// load namespaces
 	namespaces, ok := data["namespaces"]
 	if !ok {
-		logger.Info("namespaces not set")
+		logger.V(4).Info("namespaces not set")
 	} else {
 		logger := logger.WithValues("namespaces", namespaces)
 		namespaces, err := parseIncludeExcludeNamespacesFromNamespacesConfig(namespaces)
@@ -172,13 +187,13 @@ func (cd *metricsConfig) load(cm *corev1.ConfigMap) {
 			logger.Error(err, "failed to parse namespaces")
 		} else {
 			cd.namespaces = namespaces
-			logger.Info("namespaces configured")
+			logger.V(4).Info("namespaces configured")
 		}
 	}
 	// load bucket boundaries
 	bucketBoundariesString, ok := data["bucketBoundaries"]
 	if !ok {
-		logger.Info("bucketBoundaries not set")
+		logger.V(4).Info("bucketBoundaries not set")
 	} else {
 		logger := logger.WithValues("bucketBoundaries", bucketBoundariesString)
 		bucketBoundaries, err := parseBucketBoundariesConfig(bucketBoundariesString)
@@ -186,13 +201,13 @@ func (cd *metricsConfig) load(cm *corev1.ConfigMap) {
 			logger.Error(err, "failed to parse bucketBoundariesString")
 		} else {
 			cd.bucketBoundaries = bucketBoundaries
-			logger.Info("bucketBoundaries configured")
+			logger.V(4).Info("bucketBoundaries configured")
 		}
 	}
 	// load include resource details
 	metricsExposureString, ok := data["metricsExposure"]
 	if !ok {
-		logger.Info("metricsExposure not set")
+		logger.V(4).Info("metricsExposure not set")
 	} else {
 		logger := logger.WithValues("metricsExposure", metricsExposureString)
 		metricsExposure, err := parseMetricExposureConfig(metricsExposureString, cd.bucketBoundaries)
@@ -200,7 +215,7 @@ func (cd *metricsConfig) load(cm *corev1.ConfigMap) {
 			logger.Error(err, "failed to parse metricsExposure")
 		} else {
 			cd.metricsExposure = metricsExposure
-			logger.Info("metricsExposure configured")
+			logger.V(4).Info("metricsExposure configured")
 		}
 	}
 }

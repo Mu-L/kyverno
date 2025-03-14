@@ -5,6 +5,47 @@ templating:
   debug: false
   version: ~
 
+global:
+
+  image:
+    # -- (string) Global value that allows to set a single image registry across all deployments.
+    # When set, it will override any values set under `.image.registry` across the chart.
+    registry: ~
+  # -- (list) Global list of Image pull secrets
+  # When set, it will override any values set under `imagePullSecrets` under different components across the chart.
+  imagePullSecrets: []
+
+  # -- Resync period for informers
+  resyncPeriod: 15m
+
+  caCertificates:
+    # -- Global CA certificates to use with Kyverno deployments
+    # This value is expected to be one large string of CA certificates
+    # Individual controller values will override this global value
+    data: ~
+
+    # -- Global value to set single volume to be mounted for CA certificates for all deployments.
+    # Not used when `.Values.global.caCertificates.data` is defined
+    # Individual  controller values will override this global value
+    volume: {}
+    # Example to use hostPath:
+    # hostPath:
+    #   path: /etc/pki/tls/ca-certificates.crt
+    #   type: File
+
+  # -- Additional container environment variables to apply to all containers and init containers
+  extraEnvVars: []
+  # Example setting proxy
+  # extraEnvVars:
+  # - name: HTTPS_PROXY
+  #   value: 'https://proxy.example.com:3128'
+
+  # -- Global node labels for pod assignment. Non-global values will override the global value.
+  nodeSelector: {}
+
+  # -- Global List of node taints to tolerate. Non-global values will override the global value.
+  tolerations: []
+
 # -- (string) Override the name of the chart
 nameOverride: ~
 
@@ -24,11 +65,47 @@ apiVersionOverride:
   # determine the api version automatically.
   podDisruptionBudget: ~
 
+rbac:
+  roles:
+    # -- Aggregate ClusterRoles to Kubernetes default user-facing roles. For more information, see [User-facing roles](https://kubernetes.io/docs/reference/access-authn-authz/rbac/#user-facing-roles)
+    aggregate:
+      admin: true
+      view: true
+
 # CRDs configuration
 crds:
 
   # -- Whether to have Helm install the Kyverno CRDs, if the CRDs are not installed by Helm, they must be added before policies can be created
   install: true
+
+  groups:
+
+    # -- Install CRDs in group `kyverno.io`
+    kyverno:
+      cleanuppolicies: true
+      clustercleanuppolicies: true
+      clusterpolicies: true
+      globalcontextentries: true
+      policies: true
+      policyexceptions: true
+      updaterequests: true
+      validatingpolicies: true
+      celpolicyexceptions: true
+
+    policies:
+      validatingpolicies: true
+      celpolicyexceptions: true
+      imageverificationpolicies: true
+
+    # -- Install CRDs in group `reports.kyverno.io`
+    reports:
+      clusterephemeralreports: true
+      ephemeralreports: true
+
+    # -- Install CRDs in group `wgpolicyk8s.io`
+    wgpolicyk8s:
+      clusterpolicyreports: true
+      policyreports: true
 
   # -- Additional CRDs annotations
   annotations: {}
@@ -38,11 +115,83 @@ crds:
   # -- Additional CRDs labels
   customLabels: {}
 
+  migration:
+
+    # -- Enable CRDs migration using helm post upgrade hook
+    enabled: true
+
+    # -- Resources to migrate
+    resources:
+      - cleanuppolicies.kyverno.io
+      - clustercleanuppolicies.kyverno.io
+      - clusterpolicies.kyverno.io
+      - globalcontextentries.kyverno.io
+      - policies.kyverno.io
+      - policyexceptions.kyverno.io
+      - updaterequests.kyverno.io
+
+    image:
+      # -- (string) Image registry
+      registry: ~
+      defaultRegistry: reg.kyverno.io
+      # -- (string) Image repository
+      repository: kyverno/kyverno-cli
+      # -- (string) Image tag
+      # Defaults to appVersion in Chart.yaml if omitted
+      tag: ~
+      # -- (string) Image pull policy
+      pullPolicy: IfNotPresent
+
+    # -- Image pull secrets
+    imagePullSecrets: []
+    # - name: secretName
+
+    # -- Security context for the pod
+    podSecurityContext: {}
+
+    # -- Node labels for pod assignment
+    nodeSelector: {}
+
+    # -- List of node taints to tolerate
+    tolerations: []
+
+    # -- Pod anti affinity constraints.
+    podAntiAffinity: {}
+
+    # -- Pod affinity constraints.
+    podAffinity: {}
+
+    # -- Pod labels.
+    podLabels: {}
+
+    # -- Pod annotations.
+    podAnnotations: {}
+
+    # -- Node affinity constraints.
+    nodeAffinity: {}
+
+    # -- Security context for the hook containers
+    securityContext:
+      runAsUser: 65534
+      runAsGroup: 65534
+      runAsNonRoot: true
+      privileged: false
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
+
 # Configuration
 config:
 
   # -- Create the configmap.
   create: true
+
+  # -- Preserve the configmap settings during upgrade.
+  preserve: true
 
   # -- (string) The configmap name (required if `create` is `false`).
   name: ~
@@ -93,14 +242,8 @@ config:
     - '[Pod/binding,*,*]'
     - '[ReplicaSet,*,*]'
     - '[ReplicaSet/*,*,*]'
-    - '[AdmissionReport,*,*]'
-    - '[AdmissionReport/*,*,*]'
-    - '[ClusterAdmissionReport,*,*]'
-    - '[ClusterAdmissionReport/*,*,*]'
-    - '[BackgroundScanReport,*,*]'
-    - '[BackgroundScanReport/*,*,*]'
-    - '[ClusterBackgroundScanReport,*,*]'
-    - '[ClusterBackgroundScanReport/*,*,*]'
+    - '[EphemeralReport,*,*]'
+    - '[ClusterEphemeralReport,*,*]'
     # exclude resources from the chart
     - '[ClusterRole,*,{{ template "kyverno.admission-controller.roleName" . }}]'
     - '[ClusterRole,*,{{ template "kyverno.admission-controller.roleName" . }}:core]'
@@ -189,19 +332,19 @@ config:
     - '[Secret,{{ include "kyverno.namespace" . }},{{ template "kyverno.admission-controller.serviceName" . }}.{{ template "kyverno.namespace" . }}.svc.*]'
     - '[Secret,{{ include "kyverno.namespace" . }},{{ template "kyverno.cleanup-controller.name" . }}.{{ template "kyverno.namespace" . }}.svc.*]'
 
-  # -- Defines the `namespaceSelector` in the webhook configurations.
-  # Note that it takes a list of `namespaceSelector` and/or `objectSelector` in the JSON format, and only the first element
-  # will be forwarded to the webhook configurations.
+  # -- Sets the threshold for the total number of UpdateRequests generated for mutateExisitng and generate policies.
+  updateRequestThreshold: 1000
+
+  # -- Defines the `namespaceSelector`/`objectSelector` in the webhook configurations.
   # The Kyverno namespace is excluded if `excludeKyvernoNamespace` is `true` (default)
-  webhooks: []
+  webhooks:
     # Exclude namespaces
-    # - namespaceSelector:
-    #     matchExpressions:
-    #     - key: kubernetes.io/metadata.name
-    #       operator: NotIn
-    #       values:
-    #         - kube-system
-    #         - kyverno
+    namespaceSelector:
+      matchExpressions:
+      - key: kubernetes.io/metadata.name
+        operator: NotIn
+        values:
+          - kube-system
     # Exclude objects
     # - objectSelector:
     #     matchExpressions:
@@ -209,9 +352,14 @@ config:
     #       operator: DoesNotExist
 
   # -- Defines annotations to set on webhook configurations.
-  webhookAnnotations: {}
+  webhookAnnotations:
     # Example to disable admission enforcer on AKS:
-    # 'admissions.enforcer/disabled': 'true'
+    'admissions.enforcer/disabled': 'true'
+
+  # -- Defines labels to set on webhook configurations.
+  webhookLabels: {}
+    # Example to adopt webhook resources in ArgoCD:
+    # 'argocd.argoproj.io/instance': 'kyverno'
 
   # -- Defines match conditions to set on webhook configurations (requires Kubernetes 1.27+).
   matchConditions: []
@@ -223,6 +371,18 @@ config:
   # -- resourceFilter namespace exclude
   # Namespaces to exclude from the default resourceFilters
   resourceFiltersExcludeNamespaces: []
+
+  # -- resourceFilters exclude list
+  # Items to exclude from config.resourceFilters
+  resourceFiltersExclude: []
+
+  # -- resourceFilter namespace include
+  # Namespaces to include to the default resourceFilters
+  resourceFiltersIncludeNamespaces: []
+
+  # -- resourceFilters include list
+  # Items to include to config.resourceFilters
+  resourceFiltersInclude: []
 
 # Metrics configuration
 metricsConfig:
@@ -252,13 +412,21 @@ metricsConfig:
   bucketBoundaries: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 15, 20, 25, 30]
 
   # -- (map) Configures the exposure of individual metrics, by default all metrics and all labels are exported, changing this configuration requires restart of the kyverno admission controller
-  metricsExposure: ~
-  # metricsExposure:
-  #   kyverno_policy_execution_duration_seconds:
-  #     disabledLabelDimensions: ["resource_kind", "resource_namespace", "resource_request_operation"]
-  #     bucketBoundaries: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5]
-  #   kyverno_admission_review_duration_seconds:
-  #     enabled: false
+  metricsExposure:
+    kyverno_policy_execution_duration_seconds:
+      # bucketBoundaries: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5]
+      disabledLabelDimensions: ["resource_namespace", "resource_request_operation"]
+    kyverno_admission_review_duration_seconds:
+      # enabled: false
+      disabledLabelDimensions: ["resource_namespace"]
+    kyverno_policy_rule_info_total:
+      disabledLabelDimensions: ["resource_namespace", "policy_namespace"]
+    kyverno_policy_results_total:
+      disabledLabelDimensions: ["resource_namespace", "policy_namespace"]
+    kyverno_admission_requests_total:
+      disabledLabelDimensions: ["resource_namespace"]
+    kyverno_cleanup_controller_deletedobjects_total:
+      disabledLabelDimensions: ["resource_namespace", "policy_namespace"]
 
 # -- Image pull secrets for image verification policies, this will define the `--imagePullSecrets` argument
 imagePullSecrets: {}
@@ -278,6 +446,8 @@ existingImagePullSecrets: []
 
 # Tests configuration
 test:
+  # -- Sleep time before running test
+  sleep: 20
 
   image:
     # -- (string) Image registry
@@ -290,6 +460,10 @@ test:
     # -- (string) Image pull policy
     # Defaults to image.pullPolicy if omitted
     pullPolicy: ~
+
+  # -- Image pull secrets
+  imagePullSecrets: []
+  # - name: secretName
 
   resources:
     # -- Pod resource limits
@@ -322,8 +496,21 @@ webhooksCleanup:
   # -- Create a helm pre-delete hook to cleanup webhooks.
   enabled: true
 
-  # -- `kubectl` image to run commands for deleting webhooks.
-  image: bitnami/kubectl:latest
+  autoDeleteWebhooks:
+    # -- Allow webhooks controller to delete webhooks using finalizers
+    enabled: false
+
+  image:
+    # -- (string) Image registry
+    registry: ~
+    # -- Image repository
+    repository: bitnami/kubectl
+    # -- Image tag
+    # Defaults to `latest` if omitted
+    tag: '1.30.2'
+    # -- (string) Image pull policy
+    # Defaults to image.pullPolicy if omitted
+    pullPolicy: ~
 
   # -- Image pull secrets
   imagePullSecrets: []
@@ -342,6 +529,70 @@ webhooksCleanup:
 
   # -- Pod affinity constraints.
   podAffinity: {}
+
+  # -- Pod labels.
+  podLabels: {}
+
+  # -- Pod annotations.
+  podAnnotations: {}
+
+  # -- Node affinity constraints.
+  nodeAffinity: {}
+
+  # -- Security context for the hook containers
+  securityContext:
+    runAsUser: 65534
+    runAsGroup: 65534
+    runAsNonRoot: true
+    privileged: false
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+    seccompProfile:
+      type: RuntimeDefault
+
+policyReportsCleanup:
+  # -- Create a helm post-upgrade hook to cleanup the old policy reports.
+  enabled: true
+
+  image:
+    # -- (string) Image registry
+    registry: ~
+    # -- Image repository
+    repository: bitnami/kubectl
+    # -- Image tag
+    # Defaults to `latest` if omitted
+    tag: '1.30.2'
+    # -- (string) Image pull policy
+    # Defaults to image.pullPolicy if omitted
+    pullPolicy: ~
+
+  # -- Image pull secrets
+  imagePullSecrets: []
+  # - name: secretName
+
+  # -- Security context for the pod
+  podSecurityContext: {}
+
+  # -- Node labels for pod assignment
+  nodeSelector: {}
+
+  # -- List of node taints to tolerate
+  tolerations: []
+
+  # -- Pod anti affinity constraints.
+  podAntiAffinity: {}
+
+  # -- Pod affinity constraints.
+  podAffinity: {}
+
+  # -- Pod labels.
+  podLabels: {}
+
+  # -- Pod annotations.
+  podAnnotations: {}
 
   # -- Node affinity constraints.
   nodeAffinity: {}
@@ -382,6 +633,8 @@ grafana:
   # according to https://grafana-operator.github.io/grafana-operator/docs/examples/dashboard_from_configmap/readme/
   grafanaDashboard:
     create: false
+    folder: kyverno
+    allowCrossNamespaceImport: true
     matchLabels:
       dashboards: "grafana"
 
@@ -399,6 +652,17 @@ features:
   validatingAdmissionPolicyReports:
     # -- Enables the feature
     enabled: false
+  reporting:
+    # -- Enables the feature
+    validate: true
+    # -- Enables the feature
+    mutate: true
+    # -- Enables the feature
+    mutateExisting: true
+    # -- Enables the feature
+    imageVerify: true
+    # -- Enables the feature
+    generate: true
   autoUpdateWebhooks:
     # -- Enables the feature
     enabled: true
@@ -426,6 +690,12 @@ features:
   generateValidatingAdmissionPolicy:
     # -- Enables the feature
     enabled: false
+  dumpPatches:
+    # -- Enables the feature
+    enabled: false
+  globalContext:
+    # -- Maximum allowed response size from API Calls. A value of 0 bypasses checks (not recommended)
+    maxApiCallResponseLength: 2000000
   logging:
     # -- Logging format
     format: text
@@ -433,15 +703,16 @@ features:
     verbosity: 2
   omitEvents:
     # -- Events which should not be emitted (possible values `PolicyViolation`, `PolicyApplied`, `PolicyError`, and `PolicySkipped`)
-    eventTypes: []
+    eventTypes:
+      - PolicyApplied
+      - PolicySkipped
       # - PolicyViolation
-      # - PolicyApplied
       # - PolicyError
-      # - PolicySkipped
   policyExceptions:
     # -- Enables the feature
-    enabled: true
+    enabled: false
     # -- Restrict policy exceptions to a single namespace
+    # Set to "*" to allow exceptions in all namespaces
     namespace: ''
   protectManagedResources:
     # -- Enables the feature
@@ -456,174 +727,37 @@ features:
     - amazon
     - azure
     - github
-  reports:
-    # -- Reports chunk size
-    chunkSize: 1000
   ttlController:
     # -- Reconciliation interval for the label based cleanup manager
     reconciliationInterval: 1m
   tuf:
     # -- Enables the feature
     enabled: false
-    # -- (string) Tuf root
+    # -- (string) Path to Tuf root
     root: ~
+    # -- (string) Raw Tuf root
+    rootRaw: ~
     # -- (string) Tuf mirror
     mirror: ~
-
-# Cleanup cronjobs to prevent internal resources from stacking up in the cluster
-cleanupJobs:
-
-  admissionReports:
-
-    # -- Enable cleanup cronjob
-    enabled: true
-
-    image:
-      # -- (string) Image registry
-      registry: ~
-      # -- Image repository
-      repository: bitnami/kubectl
-      # -- Image tag
-      # Defaults to `latest` if omitted
-      tag: '1.26.4'
-      # -- (string) Image pull policy
-      # Defaults to image.pullPolicy if omitted
-      pullPolicy: ~
-
-    # -- Image pull secrets
-    imagePullSecrets: []
-      # - name: secretName
-
-    # -- Cronjob schedule
-    schedule: '*/10 * * * *'
-
-    # -- Reports threshold, if number of reports are above this value the cronjob will start deleting them
-    threshold: 10000
-
-    # -- Cronjob history
-    history:
-      success: 1
-      failure: 1
-
-    # -- Security context for the pod
-    podSecurityContext: {}
-
-    # -- Security context for the containers
-    securityContext:
-      runAsNonRoot: true
-      privileged: false
-      allowPrivilegeEscalation: false
-      readOnlyRootFilesystem: true
-      capabilities:
-        drop:
-          - ALL
-      seccompProfile:
-        type: RuntimeDefault
-
-    # -- Job resources
-    resources: {}
-
-    # -- List of node taints to tolerate
-    tolerations: []
-
-    # -- Node labels for pod assignment
-    nodeSelector: {}
-
-    # -- Pod Annotations
-    podAnnotations: {}
-
-    # -- Pod labels
-    podLabels: {}
-
-    # -- Pod anti affinity constraints.
-    podAntiAffinity: {}
-
-    # -- Pod affinity constraints.
-    podAffinity: {}
-
-    # -- Node affinity constraints.
-    nodeAffinity: {}
-
-  clusterAdmissionReports:
-
-    # -- Enable cleanup cronjob
-    enabled: true
-
-    image:
-      # -- (string) Image registry
-      registry: ~
-      # -- Image repository
-      repository: bitnami/kubectl
-      # -- Image tag
-      # Defaults to `latest` if omitted
-      tag: '1.26.4'
-      # -- (string) Image pull policy
-      # Defaults to image.pullPolicy if omitted
-      pullPolicy: ~
-
-    # -- Image pull secrets
-    imagePullSecrets: []
-      # - name: secretName
-
-    # -- Cronjob schedule
-    schedule: '*/10 * * * *'
-
-    # -- Reports threshold, if number of reports are above this value the cronjob will start deleting them
-    threshold: 10000
-
-    # -- Cronjob history
-    history:
-      success: 1
-      failure: 1
-
-    # -- Security context for the pod
-    podSecurityContext: {}
-
-    # -- Security context for the containers
-    securityContext:
-      runAsNonRoot: true
-      privileged: false
-      allowPrivilegeEscalation: false
-      readOnlyRootFilesystem: true
-      capabilities:
-        drop:
-          - ALL
-      seccompProfile:
-        type: RuntimeDefault
-
-    # -- Job resources
-    resources: {}
-
-    # -- List of node taints to tolerate
-    tolerations: []
-
-    # -- Node labels for pod assignment
-    nodeSelector: {}
-
-    # -- Pod Annotations
-    podAnnotations: {}
-
-    # -- Pod Labels
-    podLabels: {}
-
-    # -- Pod anti affinity constraints.
-    podAntiAffinity: {}
-
-    # -- Pod affinity constraints.
-    podAffinity: {}
-
-    # -- Node affinity constraints.
-    nodeAffinity: {}
 
 # Admission controller configuration
 admissionController:
 
   # -- Overrides features defined at the root level
-  featuresOverride: {}
+  featuresOverride:
+    admissionReports:
+      # -- Max number of admission reports allowed in flight until the admission controller stops creating new ones
+      backPressureThreshold: 1000
 
   rbac:
     # -- Create RBAC resources
     create: true
+
+    # -- Create rolebinding to view role
+    createViewRoleBinding: true
+
+    # -- The view role to use in the rolebinding
+    viewRoleName: view
 
     serviceAccount:
       # -- The ServiceAccount name
@@ -632,6 +766,12 @@ admissionController:
       # -- Annotations for the ServiceAccount
       annotations: {}
         # example.com/annotation: value
+
+    coreClusterRole:
+      # -- Extra resource permissions to add in the core cluster role.
+      # This was introduced to avoid breaking change in the chart but should ideally be moved in `clusterRole.extraResources`.
+      # @default -- See [values.yaml](values.yaml)
+      extraResources: []
 
     clusterRole:
       # -- Extra resource permissions to add in the cluster role
@@ -652,6 +792,12 @@ admissionController:
   # -- (int) Desired number of pods
   replicas: ~
 
+  # -- The number of revisions to keep
+  revisionHistoryLimit: 10
+
+  # -- Resync period for informers
+  resyncPeriod: 15m
+
   # -- Additional labels to add to each pod
   podLabels: {}
     # example.com/label: foo
@@ -659,6 +805,9 @@ admissionController:
   # -- Additional annotations to add to each pod
   podAnnotations: {}
     # example.com/annotation: foo
+
+  # -- Deployment annotations.
+  annotations: {}
 
   # -- Deployment update strategy.
   # Ref: https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy
@@ -694,6 +843,11 @@ admissionController:
   # Useful for situations like when you end up dealing with a custom CNI over Amazon EKS.
   # Update the `dnsPolicy` accordingly as well to suit the host network mode.
   hostNetwork: false
+
+  # -- admissionController webhook server port
+  # in case you are using hostNetwork: true, you might want to change the port the webhookServer is listening to
+  webhookServer:
+    port: 9443
 
   # -- `dnsPolicy` determines the manner in which DNS resolution happens in the cluster.
   # In case of `hostNetwork: true`, usually, the `dnsPolicy` is suitable to be `ClusterFirstWithHostNet`.
@@ -798,6 +952,18 @@ admissionController:
   sigstoreVolume:
     emptyDir: {}
 
+  caCertificates:
+    # -- CA certificates to use with Kyverno deployments
+    # This value is expected to be one large string of CA certificates
+    data: ~
+    # -- Volume to be mounted for CA certificates
+    # Not used when `.Values.admissionController.caCertificates.data` is defined
+    volume: {}
+    # Example to use hostPath:
+    # hostPath:
+    #   path: /etc/pki/tls/ca-certificates.crt
+    #   type: File
+
   # -- Image pull secrets
   imagePullSecrets: []
     # - secretName
@@ -806,7 +972,8 @@ admissionController:
 
     image:
       # -- Image registry
-      registry: ghcr.io
+      registry: ~
+      defaultRegistry: reg.kyverno.io
       # -- Image repository
       repository: kyverno/kyvernopre
       # -- (string) Image tag
@@ -843,12 +1010,17 @@ admissionController:
 
     # -- Additional container environment variables.
     extraEnvVars: []
+    # Example setting proxy
+    # extraEnvVars:
+    # - name: HTTPS_PROXY
+    #   value: 'https://proxy.example.com:3128'
 
   container:
 
     image:
       # -- Image registry
-      registry: ghcr.io
+      registry: ~
+      defaultRegistry: reg.kyverno.io
       # -- Image repository
       repository: kyverno/kyverno
       # -- (string) Image tag
@@ -883,6 +1055,10 @@ admissionController:
 
     # -- Additional container environment variables.
     extraEnvVars: []
+    # Example setting proxy
+    # extraEnvVars:
+    # - name: HTTPS_PROXY
+    #   value: 'https://proxy.example.com:3128'
 
   # -- Array of extra init containers
   extraInitContainers: []
@@ -970,6 +1146,17 @@ admissionController:
     # -- Otel collector credentials
     creds: ''
 
+  profiling:
+    # -- Enable profiling
+    enabled: false
+    # -- Profiling endpoint port
+    port: 6060
+    # -- Service type.
+    serviceType: ClusterIP
+    # -- Service node port.
+    # Only used if `type` is `NodePort`.
+    nodePort:
+
 # Background controller configuration
 backgroundController:
 
@@ -982,6 +1169,12 @@ backgroundController:
   rbac:
     # -- Create RBAC resources
     create: true
+
+    # -- Create rolebinding to view role
+    createViewRoleBinding: true
+
+    # -- The view role to use in the rolebinding
+    viewRoleName: view
 
     serviceAccount:
       # -- Service account name
@@ -996,14 +1189,6 @@ backgroundController:
       # This was introduced to avoid breaking change in the chart but should ideally be moved in `clusterRole.extraResources`.
       # @default -- See [values.yaml](values.yaml)
       extraResources:
-        - apiGroups:
-            - '*'
-          resources:
-            - '*'
-          verbs:
-            - get
-            - list
-            - watch
         - apiGroups:
             - networking.k8s.io
           resources:
@@ -1029,7 +1214,6 @@ backgroundController:
             - ''
           resources:
             - configmaps
-            - secrets
             - resourcequotas
             - limitranges
           verbs:
@@ -1053,7 +1237,8 @@ backgroundController:
 
   image:
     # -- Image registry
-    registry: ghcr.io
+    registry: ~
+    defaultRegistry: reg.kyverno.io
     # -- Image repository
     repository: kyverno/background-controller
     # -- Image tag
@@ -1069,6 +1254,12 @@ backgroundController:
   # -- (int) Desired number of pods
   replicas: ~
 
+  # -- The number of revisions to keep
+  revisionHistoryLimit: 10
+
+  # -- Resync period for informers
+  resyncPeriod: 15m
+
   # -- Additional labels to add to each pod
   podLabels: {}
   # example.com/label: foo
@@ -1076,6 +1267,9 @@ backgroundController:
   # -- Additional annotations to add to each pod
   podAnnotations: {}
   # example.com/annotation: foo
+
+  # -- Deployment annotations.
+  annotations: {}
 
   # -- Deployment update strategy.
   # Ref: https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy
@@ -1104,6 +1298,10 @@ backgroundController:
 
   # -- Additional container environment variables.
   extraEnvVars: []
+  # Example setting proxy
+  # extraEnvVars:
+  # - name: HTTPS_PROXY
+  #   value: 'https://proxy.example.com:3128'
 
   resources:
     # -- Pod resource limits
@@ -1174,6 +1372,18 @@ backgroundController:
     # Cannot be used if `minAvailable` is set.
     maxUnavailable:
 
+  caCertificates:
+    # -- CA certificates to use with Kyverno deployments
+    # This value is expected to be one large string of CA certificates
+    data: ~
+    # -- Volume to be mounted for CA certificates
+    # Not used when `.Values.backgroundController.caCertificates.data` is defined
+    volume: {}
+    # Example to use hostPath:
+    # hostPath:
+    #   path: /etc/pki/tls/ca-certificates.crt
+    #   type: File
+
   metricsService:
     # -- Create service.
     create: true
@@ -1239,6 +1449,22 @@ backgroundController:
     # -- Otel collector credentials
     creds: ''
 
+  # -- backgroundController server port
+  # in case you are using hostNetwork: true, you might want to change the port the backgroundController is listening to
+  server:
+    port: 9443
+
+  profiling:
+    # -- Enable profiling
+    enabled: false
+    # -- Profiling endpoint port
+    port: 6060
+    # -- Service type.
+    serviceType: ClusterIP
+    # -- Service node port.
+    # Only used if `type` is `NodePort`.
+    nodePort:
+
 # Cleanup controller configuration
 cleanupController:
 
@@ -1278,7 +1504,8 @@ cleanupController:
 
   image:
     # -- Image registry
-    registry: ghcr.io
+    registry: ~
+    defaultRegistry: reg.kyverno.io
     # -- Image repository
     repository: kyverno/cleanup-controller
     # -- (string) Image tag
@@ -1294,6 +1521,12 @@ cleanupController:
   # -- (int) Desired number of pods
   replicas: ~
 
+  # -- The number of revisions to keep
+  revisionHistoryLimit: 10
+
+  # -- Resync period for informers
+  resyncPeriod: 15m
+
   # -- Additional labels to add to each pod
   podLabels: {}
   # example.com/label: foo
@@ -1301,6 +1534,9 @@ cleanupController:
   # -- Additional annotations to add to each pod
   podAnnotations: {}
   # example.com/annotation: foo
+
+  # -- Deployment annotations.
+  annotations: {}
 
   # -- Deployment update strategy.
   # Ref: https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy
@@ -1319,6 +1555,15 @@ cleanupController:
   # Update the `dnsPolicy` accordingly as well to suit the host network mode.
   hostNetwork: false
 
+  # -- cleanupController server port
+  # in case you are using hostNetwork: true, you might want to change the port the cleanupController is listening to
+  server:
+    port: 9443
+  # -- cleanupController webhook server port
+  # in case you are using hostNetwork: true, you might want to change the port the webhookServer is listening to
+  webhookServer:
+    port: 9443
+
   # -- `dnsPolicy` determines the manner in which DNS resolution happens in the cluster.
   # In case of `hostNetwork: true`, usually, the `dnsPolicy` is suitable to be `ClusterFirstWithHostNet`.
   # For further reference: https://kubernetes.io/docs/concepts/services-networking/dns-pod-service/#pod-s-dns-policy.
@@ -1329,6 +1574,10 @@ cleanupController:
 
   # -- Additional container environment variables.
   extraEnvVars: []
+  # Example setting proxy
+  # extraEnvVars:
+  # - name: HTTPS_PROXY
+  #   value: 'https://proxy.example.com:3128'
 
   resources:
     # -- Pod resource limits
@@ -1518,6 +1767,17 @@ cleanupController:
     # -- Otel collector credentials
     creds: ''
 
+  profiling:
+    # -- Enable profiling
+    enabled: false
+    # -- Profiling endpoint port
+    port: 6060
+    # -- Service type.
+    serviceType: ClusterIP
+    # -- Service node port.
+    # Only used if `type` is `NodePort`.
+    nodePort:
+
 # Reports controller configuration
 reportsController:
 
@@ -1531,6 +1791,12 @@ reportsController:
     # -- Create RBAC resources
     create: true
 
+    # -- Create rolebinding to view role
+    createViewRoleBinding: true
+
+    # -- The view role to use in the rolebinding
+    viewRoleName: view
+
     serviceAccount:
       # -- Service account name
       name:
@@ -1538,6 +1804,12 @@ reportsController:
       # -- Annotations for the ServiceAccount
       annotations: {}
         # example.com/annotation: value
+
+    coreClusterRole:
+      # -- Extra resource permissions to add in the core cluster role.
+      # This was introduced to avoid breaking change in the chart but should ideally be moved in `clusterRole.extraResources`.
+      # @default -- See [values.yaml](values.yaml)
+      extraResources: []
 
     clusterRole:
       # -- Extra resource permissions to add in the cluster role
@@ -1549,7 +1821,8 @@ reportsController:
 
   image:
     # -- Image registry
-    registry: ghcr.io
+    registry: ~
+    defaultRegistry: reg.kyverno.io
     # -- Image repository
     repository: kyverno/reports-controller
     # -- (string) Image tag
@@ -1565,6 +1838,12 @@ reportsController:
   # -- (int) Desired number of pods
   replicas: ~
 
+  # -- The number of revisions to keep
+  revisionHistoryLimit: 10
+
+  # -- Resync period for informers
+  resyncPeriod: 15m
+
   # -- Additional labels to add to each pod
   podLabels: {}
   # example.com/label: foo
@@ -1572,6 +1851,9 @@ reportsController:
   # -- Additional annotations to add to each pod
   podAnnotations: {}
   # example.com/annotation: foo
+
+  # -- Deployment annotations.
+  annotations: {}
 
   # -- Deployment update strategy.
   # Ref: https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy
@@ -1618,6 +1900,10 @@ reportsController:
 
   # -- Additional container environment variables.
   extraEnvVars: []
+  # Example setting proxy
+  # extraEnvVars:
+  # - name: HTTPS_PROXY
+  #   value: 'https://proxy.example.com:3128'
 
   resources:
     # -- Pod resource limits
@@ -1695,6 +1981,19 @@ reportsController:
   sigstoreVolume:
     emptyDir: {}
 
+  caCertificates:
+    # -- CA certificates to use with Kyverno deployments
+    # This value is expected to be one large string of CA certificates
+    data: ~
+    # -- Volume to be mounted for CA certificates
+    # Not used when `.Values.reportsController.caCertificates.data` is defined
+    volume: {}
+    # Example to use hostPath:
+    # hostPath:
+    #   path: /etc/pki/tls/ca-certificates.crt
+    #   type: File
+
+
   metricsService:
     # -- Create service.
     create: true
@@ -1759,3 +2058,22 @@ reportsController:
     collector: ~
     # -- (string) Otel collector credentials
     creds: ~
+
+  # -- reportsController server port
+  # in case you are using hostNetwork: true, you might want to change the port the reportsController is listening to
+  server:
+    port: 9443
+
+  profiling:
+    # -- Enable profiling
+    enabled: false
+    # -- Profiling endpoint port
+    port: 6060
+    # -- Service type.
+    serviceType: ClusterIP
+    # -- Service node port.
+    # Only used if `type` is `NodePort`.
+    nodePort:
+
+  # -- Enable sanity check for reports CRDs
+  sanityChecks: true

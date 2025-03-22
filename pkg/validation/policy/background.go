@@ -8,7 +8,7 @@ import (
 	"github.com/kyverno/kyverno/pkg/autogen"
 )
 
-var forbidden = []*regexp.Regexp{
+var ForbiddenUserVariables = []*regexp.Regexp{
 	regexp.MustCompile(`[^\.](serviceAccountName)\b`),
 	regexp.MustCompile(`[^\.](serviceAccountNamespace)\b`),
 	regexp.MustCompile(`[^\.](request.userInfo)\b`),
@@ -18,19 +18,19 @@ var forbidden = []*regexp.Regexp{
 
 // containsUserVariables returns error if variable that does not start from request.object
 func containsUserVariables(policy kyvernov1.PolicyInterface, vars [][]string) error {
-	rules := autogen.ComputeRules(policy)
+	rules := autogen.Default.ComputeRules(policy, "")
 	for idx := range rules {
 		if err := hasUserMatchExclude(idx, &rules[idx]); err != nil {
 			return err
 		}
 	}
 	for _, rule := range policy.GetSpec().Rules {
-		if rule.IsMutateExisting() {
+		if rule.HasMutateExisting() {
 			return nil
 		}
 	}
 	for _, s := range vars {
-		for _, banned := range forbidden {
+		for _, banned := range ForbiddenUserVariables {
 			if banned.Match([]byte(s[2])) {
 				return fmt.Errorf("variable %s is not allowed", s[2])
 			}
@@ -43,11 +43,6 @@ func hasUserMatchExclude(idx int, rule *kyvernov1.Rule) error {
 	if path := userInfoDefined(rule.MatchResources.UserInfo); path != "" {
 		return fmt.Errorf("invalid variable used at path: spec/rules[%d]/match/%s", idx, path)
 	}
-
-	if path := userInfoDefined(rule.ExcludeResources.UserInfo); path != "" {
-		return fmt.Errorf("invalid variable used at path: spec/rules[%d]/exclude/%s", idx, path)
-	}
-
 	if len(rule.MatchResources.Any) > 0 {
 		for i, value := range rule.MatchResources.Any {
 			if path := userInfoDefined(value.UserInfo); path != "" {
@@ -55,7 +50,6 @@ func hasUserMatchExclude(idx int, rule *kyvernov1.Rule) error {
 			}
 		}
 	}
-
 	if len(rule.MatchResources.All) > 0 {
 		for i, value := range rule.MatchResources.All {
 			if path := userInfoDefined(value.UserInfo); path != "" {
@@ -63,23 +57,25 @@ func hasUserMatchExclude(idx int, rule *kyvernov1.Rule) error {
 			}
 		}
 	}
-
-	if len(rule.ExcludeResources.All) > 0 {
-		for i, value := range rule.ExcludeResources.All {
-			if path := userInfoDefined(value.UserInfo); path != "" {
-				return fmt.Errorf("invalid variable used at path: spec/rules[%d]/exclude/all[%d]/%s", idx, i, path)
+	if rule.ExcludeResources != nil {
+		if path := userInfoDefined(rule.ExcludeResources.UserInfo); path != "" {
+			return fmt.Errorf("invalid variable used at path: spec/rules[%d]/exclude/%s", idx, path)
+		}
+		if len(rule.ExcludeResources.All) > 0 {
+			for i, value := range rule.ExcludeResources.All {
+				if path := userInfoDefined(value.UserInfo); path != "" {
+					return fmt.Errorf("invalid variable used at path: spec/rules[%d]/exclude/all[%d]/%s", idx, i, path)
+				}
+			}
+		}
+		if len(rule.ExcludeResources.Any) > 0 {
+			for i, value := range rule.ExcludeResources.Any {
+				if path := userInfoDefined(value.UserInfo); path != "" {
+					return fmt.Errorf("invalid variable used at path: spec/rules[%d]/exclude/any[%d]/%s", idx, i, path)
+				}
 			}
 		}
 	}
-
-	if len(rule.ExcludeResources.Any) > 0 {
-		for i, value := range rule.ExcludeResources.Any {
-			if path := userInfoDefined(value.UserInfo); path != "" {
-				return fmt.Errorf("invalid variable used at path: spec/rules[%d]/exclude/any[%d]/%s", idx, i, path)
-			}
-		}
-	}
-
 	return nil
 }
 

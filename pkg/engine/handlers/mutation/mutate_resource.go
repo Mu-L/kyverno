@@ -2,14 +2,18 @@ package mutation
 
 import (
 	"context"
+	"strings"
 
 	"github.com/go-logr/logr"
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
+	kyvernov2 "github.com/kyverno/kyverno/api/kyverno/v2"
 	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
 	"github.com/kyverno/kyverno/pkg/engine/handlers"
 	"github.com/kyverno/kyverno/pkg/engine/mutate"
+	engineutils "github.com/kyverno/kyverno/pkg/engine/utils"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/client-go/tools/cache"
 )
 
 type mutateResourceHandler struct{}
@@ -25,7 +29,29 @@ func (h mutateResourceHandler) Process(
 	resource unstructured.Unstructured,
 	rule kyvernov1.Rule,
 	contextLoader engineapi.EngineContextLoader,
+	exceptions []*kyvernov2.PolicyException,
 ) (unstructured.Unstructured, []engineapi.RuleResponse) {
+	// check if there are policy exceptions that match the incoming resource
+	matchedExceptions := engineutils.MatchesException(exceptions, policyContext, logger)
+	if len(matchedExceptions) > 0 {
+		exceptions := make([]engineapi.GenericException, 0, len(matchedExceptions))
+		var keys []string
+		for i, exception := range matchedExceptions {
+			key, err := cache.MetaNamespaceKeyFunc(&matchedExceptions[i])
+			if err != nil {
+				logger.Error(err, "failed to compute policy exception key", "namespace", exception.GetNamespace(), "name", exception.GetName())
+				return resource, handlers.WithError(rule, engineapi.Mutation, "failed to compute exception key", err)
+			}
+			keys = append(keys, key)
+			exceptions = append(exceptions, engineapi.NewPolicyException(&exception))
+		}
+
+		logger.V(3).Info("policy rule is skipped due to policy exceptions", "exceptions", keys)
+		return resource, handlers.WithResponses(
+			engineapi.RuleSkip(rule.Name, engineapi.Mutation, "rule is skipped due to policy exceptions"+strings.Join(keys, ", "), rule.ReportProperties).WithExceptions(exceptions),
+		)
+	}
+
 	_, subresource := policyContext.ResourceKind()
 	logger.V(3).Info("processing mutate rule")
 	var parentResourceGVR metav1.GroupVersionResource

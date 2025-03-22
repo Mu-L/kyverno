@@ -16,10 +16,8 @@ limitations under the License.
 package v2beta1
 
 import (
-	"fmt"
-
-	"github.com/kyverno/kyverno/pkg/engine/variables/regex"
-	"github.com/kyverno/kyverno/pkg/utils/wildcard"
+	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
+	"github.com/kyverno/kyverno/ext/wildcard"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 )
@@ -28,28 +26,21 @@ import (
 // +kubebuilder:object:root=true
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:resource:shortName=polex,categories=kyverno
-// +kubebuilder:storageversion
+// +kubebuilder:deprecatedversion
 
 // PolicyException declares resources to be excluded from specified policies.
 type PolicyException struct {
-	metav1.TypeMeta   `json:",inline,omitempty" yaml:",inline,omitempty"`
-	metav1.ObjectMeta `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+	metav1.TypeMeta   `json:",inline,omitempty"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
 
 	// Spec declares policy exception behaviors.
-	Spec PolicyExceptionSpec `json:"spec" yaml:"spec"`
+	Spec PolicyExceptionSpec `json:"spec"`
 }
 
 // Validate implements programmatic validation
 func (p *PolicyException) Validate() (errs field.ErrorList) {
-	if err := ValidateVariables(p); err != nil {
-		errs = append(errs, field.Forbidden(field.NewPath(""), fmt.Sprintf("Policy Exception \"%s\" should not have variables", p.Name)))
-	}
 	errs = append(errs, p.Spec.Validate(field.NewPath("spec"))...)
 	return errs
-}
-
-func ValidateVariables(polex *PolicyException) error {
-	return regex.ObjectHasVariables(polex)
 }
 
 // Contains returns true if it contains an exception for the given policy/rule pair
@@ -57,18 +48,37 @@ func (p *PolicyException) Contains(policy string, rule string) bool {
 	return p.Spec.Contains(policy, rule)
 }
 
+func (p *PolicyException) GetKind() string {
+	return "PolicyException"
+}
+
+// HasPodSecurity checks if podSecurity controls is specified
+func (p *PolicyException) HasPodSecurity() bool {
+	return len(p.Spec.PodSecurity) > 0
+}
+
 // PolicyExceptionSpec stores policy exception spec
 type PolicyExceptionSpec struct {
 	// Background controls if exceptions are applied to existing policies during a background scan.
 	// Optional. Default value is "true". The value must be set to "false" if the policy rule
 	// uses variables that are only available in the admission review request (e.g. user name).
-	Background *bool `json:"background,omitempty" yaml:"background,omitempty"`
+	Background *bool `json:"background,omitempty"`
 
 	// Match defines match clause used to check if a resource applies to the exception
-	Match MatchResources `json:"match" yaml:"match"`
+	Match MatchResources `json:"match"`
+
+	// Conditions are used to determine if a resource applies to the exception by evaluating a
+	// set of conditions. The declaration can contain nested `any` or `all` statements.
+	// +optional
+	Conditions *AnyAllConditions `json:"conditions,omitempty"`
 
 	// Exceptions is a list policy/rules to be excluded
-	Exceptions []Exception `json:"exceptions" yaml:"exceptions"`
+	Exceptions []Exception `json:"exceptions"`
+
+	// PodSecurity specifies the Pod Security Standard controls to be excluded.
+	// Applicable only to policies that have validate.podSecurity subrule.
+	// +optional
+	PodSecurity []kyvernov1.PodSecurityStandard `json:"podSecurity,omitempty"`
 }
 
 func (p *PolicyExceptionSpec) BackgroundProcessingEnabled() bool {
@@ -90,6 +100,11 @@ func (p *PolicyExceptionSpec) Validate(path *field.Path) (errs field.ErrorList) 
 	for i, e := range p.Exceptions {
 		errs = append(errs, e.Validate(exceptionsPath.Index(i))...)
 	}
+
+	podSecuityPath := path.Child("podSecurity")
+	for i, p := range p.PodSecurity {
+		errs = append(errs, p.Validate(podSecuityPath.Index(i))...)
+	}
 	return errs
 }
 
@@ -108,10 +123,10 @@ type Exception struct {
 	// PolicyName identifies the policy to which the exception is applied.
 	// The policy name uses the format <namespace>/<name> unless it
 	// references a ClusterPolicy.
-	PolicyName string `json:"policyName" yaml:"policyName"`
+	PolicyName string `json:"policyName"`
 
 	// RuleNames identifies the rules to which the exception is applied.
-	RuleNames []string `json:"ruleNames" yaml:"ruleNames"`
+	RuleNames []string `json:"ruleNames"`
 }
 
 // Validate implements programmatic validation
@@ -139,7 +154,7 @@ func (p *Exception) Contains(policy string, rule string) bool {
 
 // PolicyExceptionList is a list of Policy Exceptions
 type PolicyExceptionList struct {
-	metav1.TypeMeta `json:",inline" yaml:",inline"`
-	metav1.ListMeta `json:"metadata" yaml:"metadata"`
-	Items           []PolicyException `json:"items" yaml:"items"`
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata"`
+	Items           []PolicyException `json:"items"`
 }

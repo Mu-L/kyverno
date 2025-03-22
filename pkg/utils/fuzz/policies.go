@@ -90,7 +90,7 @@ var (
 		"apiVersion": "kyvernov1.io/v1",
 		"kind": "ClusterPolicy",
 		"metadata": {
-		   "name": "validate-image"
+		   "name": "latest-image-tag-policy"
 		},
 		"spec": {
 		   "rules": [
@@ -149,7 +149,7 @@ var (
 		"apiVersion": "kyvernov1.io/v1",
 		"kind": "ClusterPolicy",
 		"metadata": {
-		   "name": "validate-host-path"
+		   "name": "equality-hostpath-policy"
 		},
 		"spec": {
 		   "rules": [
@@ -185,7 +185,7 @@ var (
 		"apiVersion": "kyvernov1.io/v1",
 		"kind": "ClusterPolicy",
 		"metadata": {
-		   "name": "policy-secaas-k8s"
+		   "name": "security-context-policy"
 		},
 		"spec": {
 		   "rules": [
@@ -218,7 +218,7 @@ var (
 		"apiVersion": "kyvernov1.io/v1",
 		"kind": "ClusterPolicy",
 		"metadata": {
-		  "name": "fuzzPolicy"
+		  "name": "container-name-policy"
 		},
 		"spec": {
 		  "rules": [
@@ -252,7 +252,7 @@ var (
 		"apiVersion": "kyvernov1.io/v1",
 		"kind": "ClusterPolicy",
 		"metadata": {
-		  "name": "policy-secaas-k8s"
+		  "name": "pod-existence-policy"
 		},
 		"spec": {
 		  "rules": [
@@ -287,7 +287,7 @@ var (
 		"apiVersion": "kyvernov1.io/v1",
 		"kind": "ClusterPolicy",
 		"metadata": {
-		  "name": "validate-host-path"
+		  "name": "host-path-cannot-exist-policy"
 		},
 		"spec": {
 		  "rules": [
@@ -323,7 +323,7 @@ var (
 		"apiVersion": "kyvernov1.io/v1",
 		"kind": "ClusterPolicy",
 		"metadata": {
-		   "name": "validate-namespace"
+		   "name": "namespace-cannot-be-empty-or-default-policy"
 		},
 		"spec": {
 		   "rules": [
@@ -362,7 +362,7 @@ var (
 		"apiVersion": "kyvernov1.io/v1",
 		"kind": "ClusterPolicy",
 		"metadata": {
-		   "name": "validate-host-network-port"
+		   "name": "hostnetwork-and-port-not-allowed-policy"
 		},
 		"spec": {
 		   "rules": [
@@ -403,7 +403,7 @@ var (
 		"apiVersion": "kyvernov1.io/v1",
 		"kind": "ClusterPolicy",
 		"metadata": {
-		   "name": "policy-secaas-k8s"
+		   "name": "supplemental-groups-should-be-higher-than-zero-policy"
 		},
 		"spec": {
 		   "rules": [
@@ -433,7 +433,7 @@ var (
 		"apiVersion": "kyvernov1.io/v1",
 		"kind": "ClusterPolicy",
 		"metadata": {
-		   "name": "policy-secaas-k8s"
+		   "name": "supplemental-groups-should-be-between"
 		},
 		"spec": {
 		   "rules": [
@@ -465,7 +465,7 @@ var (
 		"apiVersion": "kyvernov1.io/v1",
 		"kind": "ClusterPolicy",
 		"metadata": {
-		   "name": "policy-secaas-k8s"
+		   "name": "should-have-more-memory-than-first-container"
 		},
 		"spec": {
 		   "rules": [
@@ -632,7 +632,7 @@ func InitFuzz() {
 }
 
 func ShouldBlockIfLessMemoryThanFirstContainer(pod *corev1.Pod) (bool, error) {
-	if pod.Spec.Containers == nil || len(pod.Spec.Containers) == 0 {
+	if len(pod.Spec.Containers) == 0 {
 		return false, fmt.Errorf("No containers found")
 	}
 	containers := pod.Spec.Containers
@@ -753,7 +753,7 @@ func ShouldBlockIfHostnetworkOrPortAreSpecified(pod *corev1.Pod) (bool, error) {
 		}
 	}
 
-	if pod.Spec.Containers == nil || len(pod.Spec.Containers) == 0 {
+	if len(pod.Spec.Containers) == 0 {
 		return false, fmt.Errorf("No containers found")
 	}
 	containers := pod.Spec.Containers
@@ -785,7 +785,7 @@ func ShouldBlockIfNamespaceIsEmptyOrDefault(pod *corev1.Pod) (bool, error) {
 }
 
 func ShouldBlockContainerName(pod *corev1.Pod) (bool, error) {
-	if pod.Spec.Containers == nil || len(pod.Spec.Containers) == 0 {
+	if len(pod.Spec.Containers) == 0 {
 		return false, fmt.Errorf("No containers found")
 	}
 	containers := pod.Spec.Containers
@@ -799,7 +799,7 @@ func ShouldBlockContainerName(pod *corev1.Pod) (bool, error) {
 }
 
 func ShouldBlockContainerNameExistenceAnchor(pod *corev1.Pod) (bool, error) {
-	if pod.Spec.Containers == nil || len(pod.Spec.Containers) == 0 {
+	if len(pod.Spec.Containers) == 0 {
 		return false, fmt.Errorf("No containers found")
 	}
 	containers := pod.Spec.Containers
@@ -813,7 +813,7 @@ func ShouldBlockContainerNameExistenceAnchor(pod *corev1.Pod) (bool, error) {
 }
 
 func ShouldBlockImageTag(pod *corev1.Pod) (bool, error) {
-	if pod.Spec.Containers == nil || len(pod.Spec.Containers) == 0 {
+	if len(pod.Spec.Containers) == 0 {
 		return false, fmt.Errorf("No containers found")
 	}
 	containers := pod.Spec.Containers
@@ -833,7 +833,7 @@ func ShouldBlockImageTag(pod *corev1.Pod) (bool, error) {
 }
 
 func ShouldBlockEquality(pod *corev1.Pod) (bool, error) {
-	if pod.Spec.Volumes == nil || len(pod.Spec.Volumes) == 0 {
+	if len(pod.Spec.Volumes) == 0 {
 		return false, fmt.Errorf("No volumes found")
 	}
 	volumes := pod.Spec.Volumes
@@ -849,7 +849,7 @@ func ShouldBlockEquality(pod *corev1.Pod) (bool, error) {
 }
 
 func ShouldBlockIfHostPathExists(pod *corev1.Pod) (bool, error) {
-	if pod.Spec.Volumes == nil || len(pod.Spec.Volumes) == 0 {
+	if len(pod.Spec.Volumes) == 0 {
 		return false, fmt.Errorf("No volumes found")
 	}
 	volumes := pod.Spec.Volumes

@@ -11,19 +11,19 @@ import (
 
 	"github.com/go-git/go-billy/v5"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/source"
+	yamlutils "github.com/kyverno/kyverno/ext/yaml"
 	"github.com/kyverno/kyverno/pkg/client/clientset/versioned/scheme"
 	kubeutils "github.com/kyverno/kyverno/pkg/utils/kube"
-	yamlutils "github.com/kyverno/kyverno/pkg/utils/yaml"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 )
 
 func GetUnstructuredResources(resourceBytes []byte) ([]*unstructured.Unstructured, error) {
-	var resources []*unstructured.Unstructured
 	documents, err := yamlutils.SplitDocuments(resourceBytes)
 	if err != nil {
 		return nil, err
 	}
+	resources := make([]*unstructured.Unstructured, 0, len(documents))
 	for _, document := range documents {
 		resource, err := YamlToUnstructured(document)
 		if err != nil {
@@ -59,7 +59,8 @@ func YamlToUnstructured(resourceYaml []byte) (*unstructured.Unstructured, error)
 	return resource, nil
 }
 
-func GetResourceFromPath(fs billy.Filesystem, path string) (*unstructured.Unstructured, error) {
+// should be able to specify a single resource in a multi yaml file, dont error out when there are multiple resource
+func GetResourceFromPath(fs billy.Filesystem, path string, apiVersion, kind, resourceNamespace, resourceName string) (*unstructured.Unstructured, error) {
 	var resourceBytes []byte
 	if fs == nil {
 		data, err := GetFileBytes(path)
@@ -83,10 +84,18 @@ func GetResourceFromPath(fs billy.Filesystem, path string) (*unstructured.Unstru
 	if err != nil {
 		return nil, err
 	}
-	if len(resources) != 1 {
-		return nil, fmt.Errorf("exactly one resource expected, found %d", len(resources))
+
+	for _, r := range resources {
+		name := r.GetName()
+		ns := r.GetNamespace()
+		apiv := r.GetAPIVersion()
+		k := r.GetKind()
+
+		if apiv == apiVersion && k == kind && name == resourceName && ns == resourceNamespace {
+			return r, nil
+		}
 	}
-	return resources[0], nil
+	return nil, fmt.Errorf("resource with name %s not found in manifest", resourceName)
 }
 
 func GetFileBytes(path string) ([]byte, error) {

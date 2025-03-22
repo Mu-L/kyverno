@@ -10,9 +10,12 @@ import (
 	kyvernoinformer "github.com/kyverno/kyverno/pkg/client/informers/externalversions"
 	"github.com/kyverno/kyverno/pkg/clients/dclient"
 	"github.com/kyverno/kyverno/pkg/config"
+	exceptioncontroller "github.com/kyverno/kyverno/pkg/controllers/exceptions"
 	"github.com/kyverno/kyverno/pkg/engine"
 	"github.com/kyverno/kyverno/pkg/engine/adapters"
 	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
+	"github.com/kyverno/kyverno/pkg/engine/apicall"
+	"github.com/kyverno/kyverno/pkg/engine/context/loaders"
 	"github.com/kyverno/kyverno/pkg/engine/context/resolvers"
 	"github.com/kyverno/kyverno/pkg/engine/factories"
 	"github.com/kyverno/kyverno/pkg/engine/jmespath"
@@ -34,11 +37,13 @@ func NewEngine(
 	kubeClient kubernetes.Interface,
 	kyvernoClient versioned.Interface,
 	secretLister corev1listers.SecretNamespaceLister,
+	apiCallConfig apicall.APICallConfiguration,
+	exceptionsSelector engineapi.PolicyExceptionSelector,
+	gctxStore loaders.Store,
 ) engineapi.Engine {
-	configMapResolver := NewConfigMapResolver(ctx, logger, kubeClient, 15*time.Minute)
-	exceptionsSelector := NewExceptionSelector(ctx, logger, kyvernoClient, 15*time.Minute)
+	configMapResolver := NewConfigMapResolver(ctx, logger, kubeClient, resyncPeriod)
 	logger = logger.WithName("engine")
-	logger.Info("setup engine...")
+	logger.V(2).Info("setup engine...")
 	return engine.NewEngine(
 		configuration,
 		metricsConfiguration,
@@ -46,35 +51,37 @@ func NewEngine(
 		adapters.Client(client),
 		factories.DefaultRegistryClientFactory(adapters.RegistryClient(rclient), secretLister),
 		ivCache,
-		factories.DefaultContextLoaderFactory(configMapResolver),
+		factories.DefaultContextLoaderFactory(configMapResolver, factories.WithAPICallConfig(apiCallConfig), factories.WithGlobalContextStore(gctxStore)),
 		exceptionsSelector,
-		imageSignatureRepository,
+		nil,
 	)
 }
 
 func NewExceptionSelector(
-	ctx context.Context,
 	logger logr.Logger,
-	kyvernoClient versioned.Interface,
-	resyncPeriod time.Duration,
-) engineapi.PolicyExceptionSelector {
+	kyvernoInformer kyvernoinformer.SharedInformerFactory,
+) (engineapi.PolicyExceptionSelector, Controller) {
 	logger = logger.WithName("exception-selector").WithValues("enablePolicyException", enablePolicyException, "exceptionNamespace", exceptionNamespace)
-	logger.Info("setup exception selector...")
-	var exceptionsLister engineapi.PolicyExceptionSelector
-	if enablePolicyException {
-		factory := kyvernoinformer.NewSharedInformerFactory(kyvernoClient, resyncPeriod)
-		lister := factory.Kyverno().V2beta1().PolicyExceptions().Lister()
-		if exceptionNamespace != "" {
-			exceptionsLister = lister.PolicyExceptions(exceptionNamespace)
-		} else {
-			exceptionsLister = lister
-		}
-		// start informers and wait for cache sync
-		if !StartInformersAndWaitForCacheSync(ctx, logger, factory) {
-			checkError(logger, errors.New("failed to wait for cache sync"), "failed to wait for cache sync")
-		}
+	logger.V(2).Info("setup exception selector...")
+	if !enablePolicyException {
+		return nil, nil
 	}
-	return exceptionsLister
+	if exceptionNamespace == "" {
+		logger.Error(errors.New("the flag --exceptionNamespace cannot be empty"), "the flag --exceptionNamespace cannot be empty")
+		return nil, nil
+	}
+	polexCache := exceptioncontroller.NewController(
+		kyvernoInformer.Kyverno().V1().ClusterPolicies(),
+		kyvernoInformer.Kyverno().V1().Policies(),
+		kyvernoInformer.Kyverno().V2().PolicyExceptions(),
+		exceptionNamespace,
+	)
+	polexController := NewController(
+		exceptioncontroller.ControllerName,
+		polexCache,
+		exceptioncontroller.Workers,
+	)
+	return polexCache, polexController
 }
 
 func NewConfigMapResolver(
@@ -84,7 +91,7 @@ func NewConfigMapResolver(
 	resyncPeriod time.Duration,
 ) engineapi.ConfigmapResolver {
 	logger = logger.WithName("configmap-resolver").WithValues("enableConfigMapCaching", enableConfigMapCaching)
-	logger.Info("setup config map resolver...")
+	logger.V(2).Info("setup config map resolver...")
 	clientBasedResolver, err := resolvers.NewClientBasedResolver(kubeClient)
 	checkError(logger, err, "failed to create client based resolver")
 	if !enableConfigMapCaching {

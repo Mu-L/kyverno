@@ -5,28 +5,14 @@ import (
 
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/apis/v1alpha1"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/store"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 )
 
 type Variables struct {
 	values    *v1alpha1.ValuesSpec
 	variables map[string]string
-}
-
-func (v Variables) HasVariables() bool {
-	return len(v.variables) != 0
-}
-
-func (v Variables) HasPolicyVariables(policy string) bool {
-	if v.values == nil {
-		return false
-	}
-	for _, pol := range v.values.Policies {
-		if pol.Name == policy {
-			return true
-		}
-	}
-	return false
 }
 
 func (v Variables) Subresources() []v1alpha1.Subresource {
@@ -44,10 +30,12 @@ func (v Variables) NamespaceSelectors() map[string]Labels {
 		return nil
 	}
 	out := map[string]Labels{}
-	if v.values.NamespaceSelectors != nil {
-		for _, n := range v.values.NamespaceSelectors {
-			out[n.Name] = n.Labels
-		}
+	for _, n := range v.values.NamespaceSelectors {
+		out[n.Name] = n.Labels
+	}
+	// Give precedence to namespaces
+	for _, n := range v.values.Namespaces {
+		out[n.Name] = n.Labels
 	}
 	if len(out) == 0 {
 		return nil
@@ -55,7 +43,34 @@ func (v Variables) NamespaceSelectors() map[string]Labels {
 	return out
 }
 
-func (v Variables) ComputeVariables(policy, resource, kind string, kindMap sets.Set[string], variables ...string) (map[string]interface{}, error) {
+func (v Variables) Namespace(name string) *corev1.Namespace {
+	if v.values == nil {
+		return nil
+	}
+	// Give precedence to namespaces
+	for _, n := range v.values.Namespaces {
+		if n.Name == name {
+			return &n
+		}
+	}
+	for _, n := range v.values.NamespaceSelectors {
+		if n.Name == name {
+			return &corev1.Namespace{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: corev1.SchemeGroupVersion.String(),
+					Kind:       "Namespace",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:   name,
+					Labels: n.Labels,
+				},
+			}
+		}
+	}
+	return nil
+}
+
+func (v Variables) ComputeVariables(s *store.Store, policy, resource, kind string, kindMap sets.Set[string], variables ...string) (map[string]interface{}, error) {
 	resourceValues := map[string]interface{}{}
 	// first apply global values
 	if v.values != nil {
@@ -89,13 +104,13 @@ func (v Variables) ComputeVariables(policy, resource, kind string, kindMap sets.
 	}
 	// skipping the variable check for non matching kind
 	// TODO remove dependency to store
-	if kindMap.Has(kind) && len(variables) > 0 && len(resourceValues) == 0 && store.HasPolicies() {
+	if kindMap.Has(kind) && len(variables) > 0 && len(resourceValues) == 0 && s.HasPolicies() {
 		return nil, fmt.Errorf("policy `%s` have variables. pass the values for the variables for resource `%s` using set/values_file flag", policy, resource)
 	}
 	return resourceValues, nil
 }
 
-func (v Variables) SetInStore() {
+func (v Variables) SetInStore(s *store.Store) {
 	storePolicies := []store.Policy{}
 	if v.values != nil {
 		for _, p := range v.values.Policies {
@@ -113,5 +128,5 @@ func (v Variables) SetInStore() {
 			storePolicies = append(storePolicies, sp)
 		}
 	}
-	store.SetPolicies(storePolicies...)
+	s.SetPolicies(storePolicies...)
 }

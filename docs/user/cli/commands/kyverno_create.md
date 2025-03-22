@@ -37,6 +37,7 @@ kyverno create [flags]
 ```
       --add_dir_header                   If true, adds the file directory to the header of the log messages
       --alsologtostderr                  log to standard error as well as files (no effect when -logtostderr=true)
+      --kubeconfig string                Paths to a kubeconfig. Only required if out-of-cluster.
       --log_backtrace_at traceLocation   when logging hits line file:N, emit a stack trace (default :0)
       --log_dir string                   If non-empty, write log files in this directory (no effect when -logtostderr=true)
       --log_file string                  If non-empty, use this log file (no effect when -logtostderr=true)
@@ -45,7 +46,7 @@ kyverno create [flags]
       --one_output                       If true, only write logs to their native severity level (vs also writing to each lower severity level; no effect when -logtostderr=true)
       --skip_headers                     If true, avoid header prefixes in the log messages
       --skip_log_headers                 If true, avoid headers when opening log files (no effect when -logtostderr=true)
-      --stderrthreshold severity         logs at or above this threshold go to stderr when writing to files and stderr (no effect when -logtostderr=true or -alsologtostderr=false) (default 2)
+      --stderrthreshold severity         logs at or above this threshold go to stderr when writing to files and stderr (no effect when -logtostderr=true or -alsologtostderr=true) (default 2)
   -v, --v Level                          number for the log level verbosity
       --vmodule moduleSpec               comma-separated list of pattern=N settings for file-filtered logging
 ```
@@ -53,6 +54,7 @@ kyverno create [flags]
 ### SEE ALSO
 
 * [kyverno](kyverno.md)	 - Kubernetes Native Policy Management.
+* [kyverno create cluster-role](kyverno_create_cluster-role.md)	 - Create an aggregated role for given resource types
 * [kyverno create exception](kyverno_create_exception.md)	 - Create a Kyverno policy exception file.
 * [kyverno create metrics-config](kyverno_create_metrics-config.md)	 - Create a Kyverno metrics-config file.
 * [kyverno create test](kyverno_create_test.md)	 - Create a Kyverno test file.

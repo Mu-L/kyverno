@@ -1,12 +1,16 @@
 package oci
 
 import (
+	"io"
+
+	ecr "github.com/awslabs/amazon-ecr-credential-helper/ecr-login"
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/authn/github"
+	"github.com/google/go-containerregistry/pkg/v1/google"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/command"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/commands/oci/pull"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/commands/oci/push"
-	"github.com/kyverno/kyverno/pkg/registryclient"
+	"github.com/kyverno/kyverno/pkg/imageverification/imagedataloader"
 	"github.com/spf13/cobra"
 )
 
@@ -14,9 +18,9 @@ func Command() *cobra.Command {
 	keychain := authn.NewMultiKeychain(
 		authn.DefaultKeychain,
 		github.Keychain,
-		registryclient.AWSKeychain,
-		registryclient.GCPKeychain,
-		registryclient.AzureKeychain,
+		authn.NewKeychainFromHelper(ecr.NewECRHelper(ecr.WithLogger(io.Discard))),
+		google.Keychain,
+		imagedataloader.AzureKeychain,
 	)
 	cmd := &cobra.Command{
 		Use:          "oci",

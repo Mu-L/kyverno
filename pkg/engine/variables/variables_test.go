@@ -1,12 +1,11 @@
 package variables
 
 import (
-	"encoding/json"
 	"reflect"
 	"testing"
 
 	"github.com/go-logr/logr"
-	urkyverno "github.com/kyverno/kyverno/api/kyverno/v1beta1"
+	urkyverno "github.com/kyverno/kyverno/api/kyverno/v2"
 	"github.com/kyverno/kyverno/pkg/config"
 	"github.com/kyverno/kyverno/pkg/engine/context"
 	"github.com/kyverno/kyverno/pkg/engine/jmespath"

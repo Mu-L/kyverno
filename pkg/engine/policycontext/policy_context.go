@@ -4,12 +4,13 @@ import (
 	"fmt"
 
 	kyvernov1 "github.com/kyverno/kyverno/api/kyverno/v1"
-	kyvernov1beta1 "github.com/kyverno/kyverno/api/kyverno/v1beta1"
+	kyvernov2 "github.com/kyverno/kyverno/api/kyverno/v2"
 	"github.com/kyverno/kyverno/pkg/config"
 	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
 	enginectx "github.com/kyverno/kyverno/pkg/engine/context"
 	"github.com/kyverno/kyverno/pkg/engine/jmespath"
 	admissionutils "github.com/kyverno/kyverno/pkg/utils/admission"
+	"github.com/pkg/errors"
 	admissionv1 "k8s.io/api/admission/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -31,7 +32,7 @@ type PolicyContext struct {
 	element unstructured.Unstructured
 
 	// admissionInfo contains the admission request information
-	admissionInfo kyvernov1beta1.RequestInfo
+	admissionInfo kyvernov2.RequestInfo
 
 	// operation contains the admission operatipn
 	operation kyvernov1.AdmissionOperation
@@ -69,6 +70,18 @@ func (c *PolicyContext) OldResource() unstructured.Unstructured {
 	return c.oldResource
 }
 
+func (c *PolicyContext) SetResources(oldResource, newResource unstructured.Unstructured) error {
+	c.newResource = newResource
+	if err := c.jsonContext.AddResource(c.newResource.Object); err != nil {
+		return errors.Wrapf(err, "failed to replace object in the JSON context")
+	}
+	c.oldResource = oldResource
+	if err := c.jsonContext.AddOldResource(c.oldResource.Object); err != nil {
+		return errors.Wrapf(err, "failed to replace old object in the JSON context")
+	}
+	return nil
+}
+
 func (c *PolicyContext) RequestResource() metav1.GroupVersionResource {
 	return c.requestResource
 }
@@ -85,12 +98,20 @@ func (c *PolicyContext) ResourceKind() (schema.GroupVersionKind, string) {
 	return c.gvk, c.subresource
 }
 
-func (c *PolicyContext) AdmissionInfo() kyvernov1beta1.RequestInfo {
+func (c *PolicyContext) AdmissionInfo() kyvernov2.RequestInfo {
 	return c.admissionInfo
 }
 
 func (c *PolicyContext) Operation() kyvernov1.AdmissionOperation {
 	return c.operation
+}
+
+func (c *PolicyContext) SetOperation(op kyvernov1.AdmissionOperation) error {
+	c.operation = op
+	if err := c.jsonContext.AddOperation(string(op)); err != nil {
+		return errors.Wrapf(err, "failed to replace old object in the JSON context")
+	}
+	return nil
 }
 
 func (c *PolicyContext) NamespaceLabels() map[string]string {
@@ -114,65 +135,53 @@ func (c *PolicyContext) JSONContext() enginectx.Interface {
 }
 
 func (c PolicyContext) Copy() engineapi.PolicyContext {
-	return c.copy()
+	return &c
 }
 
 // Mutators
 
-func (c *PolicyContext) WithPolicy(policy kyvernov1.PolicyInterface) *PolicyContext {
-	copy := c.copy()
-	copy.policy = policy
-	return copy
+func (c PolicyContext) WithPolicy(policy kyvernov1.PolicyInterface) *PolicyContext {
+	c.policy = policy
+	return &c
 }
 
-func (c *PolicyContext) WithNamespaceLabels(namespaceLabels map[string]string) *PolicyContext {
-	copy := c.copy()
-	copy.namespaceLabels = namespaceLabels
-	return copy
+func (c PolicyContext) WithNamespaceLabels(namespaceLabels map[string]string) *PolicyContext {
+	c.namespaceLabels = namespaceLabels
+	return &c
 }
 
-func (c *PolicyContext) WithAdmissionInfo(admissionInfo kyvernov1beta1.RequestInfo) *PolicyContext {
-	copy := c.copy()
-	copy.admissionInfo = admissionInfo
-	return copy
+func (c PolicyContext) WithAdmissionInfo(admissionInfo kyvernov2.RequestInfo) *PolicyContext {
+	c.admissionInfo = admissionInfo
+	return &c
 }
 
-func (c *PolicyContext) WithNewResource(resource unstructured.Unstructured) *PolicyContext {
-	copy := c.copy()
-	copy.newResource = resource
-	return copy
+func (c PolicyContext) WithNewResource(resource unstructured.Unstructured) *PolicyContext {
+	c.newResource = resource
+	return &c
 }
 
-func (c *PolicyContext) WithOldResource(resource unstructured.Unstructured) *PolicyContext {
-	copy := c.copy()
-	copy.oldResource = resource
-	return copy
+func (c PolicyContext) WithOldResource(resource unstructured.Unstructured) *PolicyContext {
+	c.oldResource = resource
+	return &c
 }
 
-func (c *PolicyContext) WithResourceKind(gvk schema.GroupVersionKind, subresource string) *PolicyContext {
-	copy := c.copy()
-	copy.gvk = gvk
-	copy.subresource = subresource
-	return copy
+func (c PolicyContext) WithResourceKind(gvk schema.GroupVersionKind, subresource string) *PolicyContext {
+	c.gvk = gvk
+	c.subresource = subresource
+	return &c
 }
 
-func (c *PolicyContext) WithRequestResource(gvr metav1.GroupVersionResource) *PolicyContext {
-	copy := c.copy()
-	copy.requestResource = gvr
-	return copy
+func (c PolicyContext) WithRequestResource(gvr metav1.GroupVersionResource) *PolicyContext {
+	c.requestResource = gvr
+	return &c
 }
 
 func (c *PolicyContext) WithResources(newResource unstructured.Unstructured, oldResource unstructured.Unstructured) *PolicyContext {
 	return c.WithNewResource(newResource).WithOldResource(oldResource)
 }
 
-func (c *PolicyContext) WithAdmissionOperation(admissionOperation bool) *PolicyContext {
-	copy := c.copy()
-	copy.admissionOperation = admissionOperation
-	return copy
-}
-
-func (c PolicyContext) copy() *PolicyContext {
+func (c PolicyContext) WithAdmissionOperation(admissionOperation bool) *PolicyContext {
+	c.admissionOperation = admissionOperation
 	return &c
 }
 
@@ -189,19 +198,28 @@ func NewPolicyContext(
 	jp jmespath.Interface,
 	resource unstructured.Unstructured,
 	operation kyvernov1.AdmissionOperation,
-	admissionInfo *kyvernov1beta1.RequestInfo,
+	admissionInfo *kyvernov2.RequestInfo,
 	configuration config.Configuration,
 ) (*PolicyContext, error) {
 	enginectx := enginectx.NewContext(jp)
-	if err := enginectx.AddResource(resource.Object); err != nil {
-		return nil, err
+
+	if operation != kyvernov1.Delete {
+		if err := enginectx.AddResource(resource.Object); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := enginectx.AddOldResource(resource.Object); err != nil {
+			return nil, err
+		}
 	}
 	if err := enginectx.AddNamespace(resource.GetNamespace()); err != nil {
 		return nil, err
 	}
+
 	if err := enginectx.AddImageInfos(&resource, configuration); err != nil {
 		return nil, err
 	}
+
 	if admissionInfo != nil {
 		if err := enginectx.AddUserInfo(*admissionInfo); err != nil {
 			return nil, err
@@ -222,13 +240,14 @@ func NewPolicyContext(
 	if admissionInfo != nil {
 		policyContext = policyContext.WithAdmissionInfo(*admissionInfo)
 	}
+
 	return policyContext, nil
 }
 
 func NewPolicyContextFromAdmissionRequest(
 	jp jmespath.Interface,
 	request admissionv1.AdmissionRequest,
-	admissionInfo kyvernov1beta1.RequestInfo,
+	admissionInfo kyvernov2.RequestInfo,
 	gvk schema.GroupVersionKind,
 	configuration config.Configuration,
 ) (*PolicyContext, error) {
@@ -250,13 +269,14 @@ func NewPolicyContextFromAdmissionRequest(
 		WithAdmissionOperation(true).
 		WithResourceKind(gvk, request.SubResource).
 		WithRequestResource(request.Resource)
+
 	return policyContext, nil
 }
 
 func newJsonContext(
 	jp jmespath.Interface,
 	request admissionv1.AdmissionRequest,
-	userRequestInfo *kyvernov1beta1.RequestInfo,
+	userRequestInfo *kyvernov2.RequestInfo,
 ) (enginectx.Interface, error) {
 	engineCtx := enginectx.NewContext(jp)
 	if err := engineCtx.AddRequest(request); err != nil {

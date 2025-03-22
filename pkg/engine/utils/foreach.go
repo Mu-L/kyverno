@@ -5,14 +5,24 @@ import (
 
 	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
 	enginecontext "github.com/kyverno/kyverno/pkg/engine/context"
-	"github.com/kyverno/kyverno/pkg/engine/variables"
+	"github.com/kyverno/kyverno/pkg/engine/jsonutils"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
+// EvaluateList evaluates the context using the given JMESPath expression and returns a unified slice of interfaces.
 func EvaluateList(jmesPath string, ctx enginecontext.EvalInterface) ([]interface{}, error) {
 	i, err := ctx.Query(jmesPath)
 	if err != nil {
 		return nil, err
+	}
+
+	m, ok := i.([]map[string]interface{})
+	if ok {
+		l := make([]interface{}, 0, len(m))
+		for _, e := range m {
+			l = append(l, e)
+		}
+		return l, nil
 	}
 
 	l, ok := i.([]interface{})
@@ -23,15 +33,18 @@ func EvaluateList(jmesPath string, ctx enginecontext.EvalInterface) ([]interface
 	return l, nil
 }
 
-// InvertedElement inverted the order of element for patchStrategicMerge  policies as kustomize patch revering the order of patch resources.
-func InvertedElement(elements []interface{}) {
-	for i, j := 0, len(elements)-1; i < j; i, j = i+1, j-1 {
-		elements[i], elements[j] = elements[j], elements[i]
+// InvertElements inverts the order of elements for patchStrategicMerge policies
+// as kustomize patch reverses the order of patch resources.
+func InvertElements(elements []interface{}) []interface{} {
+	elementsCopy := make([]interface{}, len(elements))
+	for i := range elements {
+		elementsCopy[i] = elements[len(elements)-i-1]
 	}
+	return elementsCopy
 }
 
 func AddElementToContext(ctx engineapi.PolicyContext, element interface{}, index, nesting int, elementScope *bool) error {
-	data, err := variables.DocumentToUntyped(element)
+	data, err := jsonutils.DocumentToUntyped(element)
 	if err != nil {
 		return err
 	}

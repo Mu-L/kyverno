@@ -3,6 +3,7 @@ package webhooks
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -23,36 +24,11 @@ import (
 	rbacv1listers "k8s.io/client-go/listers/rbac/v1"
 )
 
-// DebugModeOptions holds the options to configure debug mode
-type DebugModeOptions struct {
-	// DumpPayload is used to activate/deactivate debug mode.
-	DumpPayload bool
-}
-
 type Server interface {
 	// Run TLS server in separate thread and returns control immediately
-	Run(<-chan struct{})
+	Run()
 	// Stop TLS server and returns control after the server is shut down
 	Stop()
-}
-
-type ExceptionHandlers interface {
-	// Validate performs the validation check on exception resources
-	Validate(context.Context, logr.Logger, handlers.AdmissionRequest, time.Time) admissionv1.AdmissionResponse
-}
-
-type PolicyHandlers interface {
-	// Mutate performs the mutation of policy resources
-	Mutate(context.Context, logr.Logger, handlers.AdmissionRequest, time.Time) admissionv1.AdmissionResponse
-	// Validate performs the validation check on policy resources
-	Validate(context.Context, logr.Logger, handlers.AdmissionRequest, time.Time) admissionv1.AdmissionResponse
-}
-
-type ResourceHandlers interface {
-	// Mutate performs the mutation of kube resources
-	Mutate(context.Context, logr.Logger, handlers.AdmissionRequest, string, time.Time) admissionv1.AdmissionResponse
-	// Validate performs the validation check on kube resources
-	Validate(context.Context, logr.Logger, handlers.AdmissionRequest, string, time.Time) admissionv1.AdmissionResponse
 }
 
 type server struct {
@@ -71,6 +47,8 @@ func NewServer(
 	policyHandlers PolicyHandlers,
 	resourceHandlers ResourceHandlers,
 	exceptionHandlers ExceptionHandlers,
+	celExceptionHandlers CELExceptionHandlers,
+	globalContextHandlers GlobalContextHandlers,
 	configuration config.Configuration,
 	metricsConfig metrics.MetricsConfigManager,
 	debugModeOpts DebugModeOptions,
@@ -82,17 +60,22 @@ func NewServer(
 	rbLister rbacv1listers.RoleBindingLister,
 	crbLister rbacv1listers.ClusterRoleBindingLister,
 	discovery dclient.IDiscovery,
+	webhookServerPort int32,
 ) Server {
 	mux := httprouter.New()
 	resourceLogger := logger.WithName("resource")
 	policyLogger := logger.WithName("policy")
 	exceptionLogger := logger.WithName("exception")
+	celExceptionLogger := logger.WithName("cel-exception")
+	globalContextLogger := logger.WithName("globalcontext")
 	verifyLogger := logger.WithName("verify")
-	registerWebhookHandlers(
+	vpolLogger := logger.WithName("vpol")
+	ivpolLogger := logger.WithName("ivpol")
+	registerWebhookHandlersWithAll(
 		mux,
 		"MUTATE",
 		config.MutatingWebhookServicePath,
-		resourceHandlers.Mutate,
+		resourceHandlers.Mutation,
 		func(handler handlers.AdmissionHandler) handlers.HttpHandler {
 			return handler.
 				WithFilter(configuration).
@@ -105,11 +88,28 @@ func NewServer(
 				WithAdmission(resourceLogger.WithName("mutate"))
 		},
 	)
-	registerWebhookHandlers(
+	registerWebhookHandlersWithAll(
+		mux,
+		"IVPOL-MUTATE",
+		config.PolicyServicePath+config.ImageVerificationPolicyServicePath+config.MutatingWebhookServicePath,
+		resourceHandlers.ImageVerificationPoliciesMutation,
+		func(handler handlers.AdmissionHandler) handlers.HttpHandler {
+			return handler.
+				WithFilter(configuration).
+				WithProtection(toggle.FromContext(ctx).ProtectManagedResources()).
+				WithDump(debugModeOpts.DumpPayload).
+				WithTopLevelGVK(discovery).
+				WithRoles(rbLister, crbLister).
+				WithOperationFilter(admissionv1.Create, admissionv1.Update, admissionv1.Connect).
+				WithMetrics(resourceLogger, metricsConfig.Config(), metrics.WebhookMutating).
+				WithAdmission(resourceLogger.WithName("mutate"))
+		},
+	)
+	registerWebhookHandlersWithAll(
 		mux,
 		"VALIDATE",
 		config.ValidatingWebhookServicePath,
-		resourceHandlers.Validate,
+		resourceHandlers.Validation,
 		func(handler handlers.AdmissionHandler) handlers.HttpHandler {
 			return handler.
 				WithFilter(configuration).
@@ -121,10 +121,42 @@ func NewServer(
 				WithAdmission(resourceLogger.WithName("validate"))
 		},
 	)
+	registerWebhookHandlers(
+		mux,
+		"VPOL",
+		config.PolicyServicePath+config.ValidatingPolicyServicePath+config.ValidatingWebhookServicePath,
+		resourceHandlers.ValidatingPolicies,
+		func(handler handlers.AdmissionHandler) handlers.HttpHandler {
+			return handler.
+				WithFilter(configuration).
+				WithProtection(toggle.FromContext(ctx).ProtectManagedResources()).
+				WithDump(debugModeOpts.DumpPayload).
+				WithTopLevelGVK(discovery).
+				WithRoles(rbLister, crbLister).
+				WithMetrics(resourceLogger, metricsConfig.Config(), metrics.WebhookValidating).
+				WithAdmission(vpolLogger.WithName("validate"))
+		},
+	)
+	registerWebhookHandlers(
+		mux,
+		"IVPOL-VALIDATE",
+		config.PolicyServicePath+config.ImageVerificationPolicyServicePath+config.ValidatingWebhookServicePath,
+		resourceHandlers.ImageVerificationPolicies,
+		func(handler handlers.AdmissionHandler) handlers.HttpHandler {
+			return handler.
+				WithFilter(configuration).
+				WithProtection(toggle.FromContext(ctx).ProtectManagedResources()).
+				WithDump(debugModeOpts.DumpPayload).
+				WithTopLevelGVK(discovery).
+				WithRoles(rbLister, crbLister).
+				WithMetrics(resourceLogger, metricsConfig.Config(), metrics.WebhookValidating).
+				WithAdmission(ivpolLogger.WithName("validate"))
+		},
+	)
 	mux.HandlerFunc(
 		"POST",
 		config.PolicyMutatingWebhookServicePath,
-		handlers.FromAdmissionFunc("MUTATE", policyHandlers.Mutate).
+		handlerFunc("MUTATE", policyHandlers.Mutation, "").
 			WithDump(debugModeOpts.DumpPayload).
 			WithMetrics(policyLogger, metricsConfig.Config(), metrics.WebhookMutating).
 			WithAdmission(policyLogger.WithName("mutate")).
@@ -133,7 +165,7 @@ func NewServer(
 	mux.HandlerFunc(
 		"POST",
 		config.PolicyValidatingWebhookServicePath,
-		handlers.FromAdmissionFunc("VALIDATE", policyHandlers.Validate).
+		handlerFunc("VALIDATE", policyHandlers.Validation, "").
 			WithDump(debugModeOpts.DumpPayload).
 			WithSubResourceFilter().
 			WithMetrics(policyLogger, metricsConfig.Config(), metrics.WebhookValidating).
@@ -143,11 +175,31 @@ func NewServer(
 	mux.HandlerFunc(
 		"POST",
 		config.ExceptionValidatingWebhookServicePath,
-		handlers.FromAdmissionFunc("VALIDATE", exceptionHandlers.Validate).
+		handlerFunc("VALIDATE", exceptionHandlers.Validation, "").
 			WithDump(debugModeOpts.DumpPayload).
 			WithSubResourceFilter().
 			WithMetrics(exceptionLogger, metricsConfig.Config(), metrics.WebhookValidating).
 			WithAdmission(exceptionLogger.WithName("validate")).
+			ToHandlerFunc("VALIDATE"),
+	)
+	mux.HandlerFunc(
+		"POST",
+		config.CELExceptionValidatingWebhookServicePath,
+		handlerFunc("VALIDATE", celExceptionHandlers.Validation, "").
+			WithDump(debugModeOpts.DumpPayload).
+			WithSubResourceFilter().
+			WithMetrics(celExceptionLogger, metricsConfig.Config(), metrics.WebhookValidating).
+			WithAdmission(celExceptionLogger.WithName("validate")).
+			ToHandlerFunc("VALIDATE"),
+	)
+	mux.HandlerFunc(
+		"POST",
+		config.GlobalContextValidatingWebhookServicePath,
+		handlerFunc("VALIDATE", globalContextHandlers.Validation, "").
+			WithDump(debugModeOpts.DumpPayload).
+			WithSubResourceFilter().
+			WithMetrics(globalContextLogger, metricsConfig.Config(), metrics.WebhookValidating).
+			WithAdmission(globalContextLogger.WithName("validate")).
 			ToHandlerFunc("VALIDATE"),
 	)
 	mux.HandlerFunc(
@@ -161,7 +213,7 @@ func NewServer(
 	mux.HandlerFunc("GET", config.ReadinessServicePath, handlers.Probe(runtime.IsReady))
 	return &server{
 		server: &http.Server{
-			Addr: ":9443",
+			Addr: fmt.Sprintf(":%d", webhookServerPort),
 			TLSConfig: &tls.Config{
 				GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 					certPem, keyPem, err := tlsProvider()
@@ -199,23 +251,17 @@ func NewServer(
 	}
 }
 
-func (s *server) Run(stopCh <-chan struct{}) {
+func (s *server) Run() {
 	go func() {
-		logger.V(3).Info("started serving requests", "addr", s.server.Addr)
-		if err := s.server.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
-			logger.Error(err, "failed to listen to requests")
+		if err := s.server.ListenAndServeTLS("", ""); err != nil {
+			logging.Error(err, "failed to start server")
 		}
 	}()
-	logger.Info("starting service")
-
-	<-stopCh
-	s.Stop()
 }
 
 func (s *server) Stop() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
 	s.cleanup(ctx)
 	err := s.server.Shutdown(ctx)
 	if err != nil {
@@ -232,6 +278,8 @@ func (s *server) cleanup(ctx context.Context) {
 		deleteLease := func(name string) {
 			if err := s.leaseClient.Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 				logger.Error(err, "failed to clean up lease", "name", name)
+			} else if err == nil {
+				logger.V(2).Info("successfully deleted leases", "label", kyverno.LabelWebhookManagedBy)
 			}
 		}
 		deleteVwc := func() {
@@ -239,6 +287,8 @@ func (s *server) cleanup(ctx context.Context) {
 				LabelSelector: kyverno.LabelWebhookManagedBy,
 			}); err != nil && !apierrors.IsNotFound(err) {
 				logger.Error(err, "failed to clean up validating webhook configuration", "label", kyverno.LabelWebhookManagedBy)
+			} else if err == nil {
+				logger.V(2).Info("successfully deleted validating webhook configurations", "label", kyverno.LabelWebhookManagedBy)
 			}
 		}
 		deleteMwc := func() {
@@ -246,6 +296,8 @@ func (s *server) cleanup(ctx context.Context) {
 				LabelSelector: kyverno.LabelWebhookManagedBy,
 			}); err != nil && !apierrors.IsNotFound(err) {
 				logger.Error(err, "failed to clean up mutating webhook configuration", "label", kyverno.LabelWebhookManagedBy)
+			} else if err == nil {
+				logger.V(2).Info("successfully deleted mutating webhook configurations", "label", kyverno.LabelWebhookManagedBy)
 			}
 		}
 		deleteLease("kyvernopre-lock")
@@ -259,28 +311,34 @@ func registerWebhookHandlers(
 	mux *httprouter.Router,
 	name string,
 	basePath string,
-	handlerFunc func(context.Context, logr.Logger, handlers.AdmissionRequest, string, time.Time) admissionv1.AdmissionResponse,
+	handler Handler,
 	builder func(handler handlers.AdmissionHandler) handlers.HttpHandler,
 ) {
-	all := handlers.FromAdmissionFunc(
-		name,
-		func(ctx context.Context, logger logr.Logger, request handlers.AdmissionRequest, startTime time.Time) admissionv1.AdmissionResponse {
-			return handlerFunc(ctx, logger, request, "all", startTime)
-		},
-	)
-	ignore := handlers.FromAdmissionFunc(
-		name,
-		func(ctx context.Context, logger logr.Logger, request handlers.AdmissionRequest, startTime time.Time) admissionv1.AdmissionResponse {
-			return handlerFunc(ctx, logger, request, "ignore", startTime)
-		},
-	)
-	fail := handlers.FromAdmissionFunc(
-		name,
-		func(ctx context.Context, logger logr.Logger, request handlers.AdmissionRequest, startTime time.Time) admissionv1.AdmissionResponse {
-			return handlerFunc(ctx, logger, request, "fail", startTime)
-		},
-	)
-	mux.HandlerFunc("POST", basePath, builder(all).ToHandlerFunc(name))
+	ignore := handlerFunc(name, handler, "ignore")
+	fail := handlerFunc(name, handler, "fail")
 	mux.HandlerFunc("POST", basePath+"/ignore", builder(ignore).ToHandlerFunc(name))
 	mux.HandlerFunc("POST", basePath+"/fail", builder(fail).ToHandlerFunc(name))
+	mux.HandlerFunc("POST", basePath+"/ignore"+config.FineGrainedWebhookPath+"/*policy", builder(ignore).ToHandlerFunc(name))
+	mux.HandlerFunc("POST", basePath+"/fail"+config.FineGrainedWebhookPath+"/*policy", builder(fail).ToHandlerFunc(name))
+}
+
+func registerWebhookHandlersWithAll(
+	mux *httprouter.Router,
+	name string,
+	basePath string,
+	handler Handler,
+	builder func(handler handlers.AdmissionHandler) handlers.HttpHandler,
+) {
+	all := handlerFunc(name, handler, "all")
+	mux.HandlerFunc("POST", basePath, builder(all).ToHandlerFunc(name))
+	registerWebhookHandlers(mux, name, basePath, handler, builder)
+}
+
+func handlerFunc(name string, handler Handler, failurePolicy string) handlers.AdmissionHandler {
+	return handlers.FromAdmissionFunc(
+		name,
+		func(ctx context.Context, logger logr.Logger, request handlers.AdmissionRequest, startTime time.Time) admissionv1.AdmissionResponse {
+			return handler.Execute(ctx, logger, request, failurePolicy, startTime)
+		},
+	)
 }

@@ -1,7 +1,7 @@
 package test
 
 import (
-	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"testing"
@@ -39,7 +39,7 @@ func TestLoadTests(t *testing.T) {
 		fileName: "kyverno-test-invalid.yaml",
 		want: []TestCase{{
 			Path: "../_testdata/tests/test-invalid/kyverno-test-invalid.yaml",
-			Err:  errors.New("error unmarshaling JSON: while decoding JSON: json: unknown field \"foo\""),
+			Err:  fmt.Errorf("error unmarshaling JSON: while decoding JSON: json: unknown field \"foo\""),
 		}},
 		wantErr: false,
 	}, {
@@ -65,9 +65,11 @@ func TestLoadTests(t *testing.T) {
 						Result: policyreportv1alpha2.StatusPass,
 						Rule:   "only-allow-trusted-images",
 					},
-					Resources: []string{
-						"test-pod-with-non-root-user-image",
-						"test-pod-with-trusted-registry",
+					TestResultData: v1alpha1.TestResultData{
+						Resources: []string{
+							"test-pod-with-non-root-user-image",
+							"test-pod-with-trusted-registry",
+						},
 					},
 				}},
 			},
@@ -97,7 +99,9 @@ func TestLoadTests(t *testing.T) {
 						Rule:              "generate-limitrange",
 						GeneratedResource: "generatedLimitRange.yaml",
 					},
-					Resources: []string{"hello-world-namespace"},
+					TestResultData: v1alpha1.TestResultData{
+						Resources: []string{"hello-world-namespace"},
+					},
 				}, {
 					TestResultBase: v1alpha1.TestResultBase{
 						Kind:              "Namespace",
@@ -106,7 +110,9 @@ func TestLoadTests(t *testing.T) {
 						Rule:              "generate-resourcequota",
 						GeneratedResource: "generatedResourceQuota.yaml",
 					},
-					Resources: []string{"hello-world-namespace"},
+					TestResultData: v1alpha1.TestResultData{
+						Resources: []string{"hello-world-namespace"},
+					},
 				}},
 			},
 		}},
@@ -134,9 +140,11 @@ func TestLoadTests(t *testing.T) {
 						Result: policyreportv1alpha2.StatusPass,
 						Rule:   "only-allow-trusted-images",
 					},
-					Resources: []string{
-						"test-pod-with-non-root-user-image",
-						"test-pod-with-trusted-registry",
+					TestResultData: v1alpha1.TestResultData{
+						Resources: []string{
+							"test-pod-with-non-root-user-image",
+							"test-pod-with-trusted-registry",
+						},
 					},
 				}},
 			},
@@ -160,7 +168,9 @@ func TestLoadTests(t *testing.T) {
 						Rule:              "generate-limitrange",
 						GeneratedResource: "generatedLimitRange.yaml",
 					},
-					Resources: []string{"hello-world-namespace"},
+					TestResultData: v1alpha1.TestResultData{
+						Resources: []string{"hello-world-namespace"},
+					},
 				}, {
 					TestResultBase: v1alpha1.TestResultBase{
 						Kind:              "Namespace",
@@ -169,7 +179,9 @@ func TestLoadTests(t *testing.T) {
 						Rule:              "generate-resourcequota",
 						GeneratedResource: "generatedResourceQuota.yaml",
 					},
-					Resources: []string{"hello-world-namespace"},
+					TestResultData: v1alpha1.TestResultData{
+						Resources: []string{"hello-world-namespace"},
+					},
 				}},
 			},
 		}},
@@ -182,8 +194,12 @@ func TestLoadTests(t *testing.T) {
 				t.Errorf("LoadTests() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("LoadTests() = %v, want %v", got, tt.want)
+			for i := range tt.want {
+				if tt.want[i].Err != nil {
+					assert.Equal(t, tt.want[i].Err.Error(), got[i].Err.Error())
+				} else if !reflect.DeepEqual(got[i], tt.want[i]) {
+					t.Errorf("LoadTests() = %v, want %v", got, tt.want)
+				}
 			}
 		})
 	}
@@ -230,9 +246,11 @@ func TestLoadTest(t *testing.T) {
 						Result: policyreportv1alpha2.StatusPass,
 						Rule:   "only-allow-trusted-images",
 					},
-					Resources: []string{
-						"test-pod-with-non-root-user-image",
-						"test-pod-with-trusted-registry",
+					TestResultData: v1alpha1.TestResultData{
+						Resources: []string{
+							"test-pod-with-non-root-user-image",
+							"test-pod-with-trusted-registry",
+						},
 					},
 				}},
 			},
@@ -259,9 +277,11 @@ func TestLoadTest(t *testing.T) {
 						Result: policyreportv1alpha2.StatusPass,
 						Rule:   "only-allow-trusted-images",
 					},
-					Resources: []string{
-						"test-pod-with-non-root-user-image",
-						"test-pod-with-trusted-registry",
+					TestResultData: v1alpha1.TestResultData{
+						Resources: []string{
+							"test-pod-with-non-root-user-image",
+							"test-pod-with-trusted-registry",
+						},
 					},
 				}},
 			},

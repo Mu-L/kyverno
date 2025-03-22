@@ -4,6 +4,8 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+
+	"k8s.io/utils/ptr"
 )
 
 func Test_parseExclusions(t *testing.T) {
@@ -258,6 +260,43 @@ func Test_parseWebhookAnnotations(t *testing.T) {
 	}
 }
 
+func Test_parseWebhookLabels(t *testing.T) {
+	type args struct {
+		in string
+	}
+	tests := []struct {
+		name    string
+		args    args
+		want    map[string]string
+		wantErr bool
+	}{{
+		args:    args{"hello"},
+		wantErr: true,
+	}, {
+		args:    args{""},
+		wantErr: true,
+	}, {
+		args: args{"null"},
+	}, {
+		args: args{`{"a": "b"}`},
+		want: map[string]string{
+			"a": "b",
+		},
+	}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseWebhookLabels(tt.args.in)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseWebhookLabels() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("parseWebhookLabels() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func Test_parseBucketBoundariesConfig(t *testing.T) {
 	var emptyBoundaries []float64
 
@@ -291,9 +330,6 @@ func Test_parseBucketBoundariesConfig(t *testing.T) {
 }
 
 func Test_parseMetricExposureConfig(t *testing.T) {
-	boolPtr := func(b bool) *bool {
-		return &b
-	}
 	defaultBoundaries := []float64{0.005, 0.01}
 	tests := []struct {
 		input         string
@@ -307,8 +343,8 @@ func Test_parseMetricExposureConfig(t *testing.T) {
 				"key2": {"enabled": false, "disabledLabelDimensions": [], "bucketBoundaries": [1.01, 2.5, 5, 10]}
 			}`,
 			expected: map[string]metricExposureConfig{
-				"key1": {Enabled: boolPtr(true), DisabledLabelDimensions: []string{"dim1", "dim2"}, BucketBoundaries: []float64{}},
-				"key2": {Enabled: boolPtr(false), DisabledLabelDimensions: []string{}, BucketBoundaries: []float64{1.01, 2.5, 5, 10}},
+				"key1": {Enabled: ptr.To(true), DisabledLabelDimensions: []string{"dim1", "dim2"}, BucketBoundaries: []float64{}},
+				"key2": {Enabled: ptr.To(false), DisabledLabelDimensions: []string{}, BucketBoundaries: []float64{1.01, 2.5, 5, 10}},
 			},
 			expectedError: false,
 		},
@@ -318,7 +354,7 @@ func Test_parseMetricExposureConfig(t *testing.T) {
 				"key1": {"disabledLabelDimensions": ["dim1", "dim2"]}
 			}`,
 			expected: map[string]metricExposureConfig{
-				"key1": {Enabled: boolPtr(true), DisabledLabelDimensions: []string{"dim1", "dim2"}, BucketBoundaries: defaultBoundaries},
+				"key1": {Enabled: ptr.To(true), DisabledLabelDimensions: []string{"dim1", "dim2"}, BucketBoundaries: defaultBoundaries},
 			},
 			expectedError: false,
 		},
@@ -328,7 +364,7 @@ func Test_parseMetricExposureConfig(t *testing.T) {
 				"key1": {"enabled": false}
 			}`,
 			expected: map[string]metricExposureConfig{
-				"key1": {Enabled: boolPtr(false), DisabledLabelDimensions: []string{}, BucketBoundaries: defaultBoundaries},
+				"key1": {Enabled: ptr.To(false), DisabledLabelDimensions: []string{}, BucketBoundaries: defaultBoundaries},
 			},
 			expectedError: false,
 		},
@@ -339,8 +375,8 @@ func Test_parseMetricExposureConfig(t *testing.T) {
 				"key2": {"bucketBoundaries": [1.01, 2.5, 5, 10]}
 			}`,
 			expected: map[string]metricExposureConfig{
-				"key1": {Enabled: boolPtr(true), DisabledLabelDimensions: []string{}, BucketBoundaries: []float64{}},
-				"key2": {Enabled: boolPtr(true), DisabledLabelDimensions: []string{}, BucketBoundaries: []float64{1.01, 2.5, 5, 10}},
+				"key1": {Enabled: ptr.To(true), DisabledLabelDimensions: []string{}, BucketBoundaries: []float64{}},
+				"key2": {Enabled: ptr.To(true), DisabledLabelDimensions: []string{}, BucketBoundaries: []float64{1.01, 2.5, 5, 10}},
 			},
 			expectedError: false,
 		},

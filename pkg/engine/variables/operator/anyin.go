@@ -6,10 +6,10 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
+	"github.com/kyverno/kyverno/ext/wildcard"
 	"github.com/kyverno/kyverno/pkg/engine/context"
 	"github.com/kyverno/kyverno/pkg/engine/operator"
 	"github.com/kyverno/kyverno/pkg/engine/pattern"
-	wildcard "github.com/kyverno/kyverno/pkg/utils/wildcard"
 )
 
 // NewAnyInHandler returns handler to manage AnyIn operations
@@ -55,7 +55,7 @@ func (anyin AnyInHandler) validateValueWithStringPattern(key string, value inter
 	return keyExists
 }
 
-// anykeyExistsInArray checks if the  key exists in the array value
+// anyKeyExistsInArray checks if the  key exists in the array value
 // The value can be a string, an array of strings, or a JSON format
 // array of strings (e.g. ["val1", "val2", "val3"].
 func anyKeyExistsInArray(key string, value interface{}, log logr.Logger) (invalidType bool, keyExists bool) {
@@ -118,7 +118,7 @@ func (anyin AnyInHandler) validateValueWithStringSetPattern(key []string, value 
 	return isAnyIn
 }
 
-// anysetExistsInArray checks if any key is a subset of value
+// anySetExistsInArray checks if any key is a subset of value
 // The value can be a string, an array of strings, or a JSON format
 // array of strings (e.g. ["val1", "val2", "val3"].
 // notIn argument if set to true will check for NotIn
@@ -129,6 +129,14 @@ func anySetExistsInArray(key []string, value interface{}, log logr.Logger, anyNo
 		for _, val := range valuesAvailable {
 			valueSlice = append(valueSlice, fmt.Sprint(val))
 		}
+		if anyNotIn {
+			return false, isAnyNotIn(key, valueSlice)
+		}
+		return false, isAnyIn(key, valueSlice)
+
+	case int, int32, int64, float32, float64, bool:
+		var valueSlice []string
+		valueSlice = append(valueSlice, fmt.Sprint(value))
 		if anyNotIn {
 			return false, isAnyNotIn(key, valueSlice)
 		}

@@ -13,7 +13,8 @@ import (
 
 var (
 	// logging
-	loggingFormat string
+	loggingFormat   string
+	loggingTsFormat string
 	// profiling
 	profilingEnabled bool
 	profilingAddress string
@@ -33,30 +34,41 @@ var (
 	kubeconfig           string
 	clientRateLimitQPS   float64
 	clientRateLimitBurst int
+	eventsRateLimitQPS   float64
+	eventsRateLimitBurst int
 	// engine
 	enablePolicyException  bool
 	exceptionNamespace     string
 	enableConfigMapCaching bool
 	// cosign
-	imageSignatureRepository string
-	enableTUF                bool
-	tufMirror                string
-	tufRoot                  string
+	enableTUF  bool
+	tufMirror  string
+	tufRoot    string
+	tufRootRaw string
 	// registry client
 	imagePullSecrets          string
 	allowInsecureRegistry     bool
 	registryCredentialHelpers string
 	// leader election
 	leaderElectionRetryPeriod time.Duration
+	// cleanupServerPort is the kyverno cleanup server port
+	cleanupServerPort string
 	// image verify cache
 	imageVerifyCacheEnabled     bool
 	imageVerifyCacheTTLDuration time.Duration
 	imageVerifyCacheMaxSize     int64
+	// global context
+	enableGlobalContext bool
+	// reporting
+	enableReporting string
+	// resync
+	resyncPeriod time.Duration
 )
 
 func initLoggingFlags() {
 	logging.InitFlags(nil)
 	flag.StringVar(&loggingFormat, "loggingFormat", logging.TextFormat, "This determines the output format of the logger.")
+	flag.StringVar(&loggingTsFormat, "loggingtsFormat", logging.DefaultTime, "This determines the timestamp format of the logger.")
 	checkErr(flag.Set("v", "2"), "failed to init flags")
 }
 
@@ -81,15 +93,20 @@ func initMetricsFlags() {
 	flag.BoolVar(&disableMetricsExport, "disableMetrics", false, "Set this flag to 'true' to disable metrics.")
 }
 
-func initKubeconfigFlags(qps float64, burst int) {
-	flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
+func initKubeconfigFlags(qps float64, burst int, eventsQPS float64, eventsBurst int) {
+	if f := flag.Lookup("kubeconfig"); f == nil {
+		flag.StringVar(&kubeconfig, "kubeconfig", "", "Path to a kubeconfig. Only required if out-of-cluster.")
+	}
 	flag.Float64Var(&clientRateLimitQPS, "clientRateLimitQPS", qps, "Configure the maximum QPS to the Kubernetes API server from Kyverno. Uses the client default if zero.")
 	flag.IntVar(&clientRateLimitBurst, "clientRateLimitBurst", burst, "Configure the maximum burst for throttle. Uses the client default if zero.")
+	flag.Float64Var(&eventsRateLimitQPS, "eventsRateLimitQPS", eventsQPS, "Configure the maximum QPS to the Kubernetes API server from Kyverno for events. Uses the client default if zero.")
+	flag.IntVar(&eventsRateLimitBurst, "eventsRateLimitBurst", eventsBurst, "Configure the maximum burst for throttle for events. Uses the client default if zero.")
+	flag.DurationVar(&resyncPeriod, "resyncPeriod", 15*time.Minute, "Configure the resync period for informer factory")
 }
 
 func initPolicyExceptionsFlags() {
-	flag.StringVar(&exceptionNamespace, "exceptionNamespace", "", "Configure the namespace to accept PolicyExceptions.")
-	flag.BoolVar(&enablePolicyException, "enablePolicyException", true, "Enable PolicyException feature.")
+	flag.StringVar(&exceptionNamespace, "exceptionNamespace", "", "Configure the namespace to accept PolicyExceptions. If it is set to '*', exceptions are allowed in all namespaces.")
+	flag.BoolVar(&enablePolicyException, "enablePolicyException", false, "Enable PolicyException feature.")
 }
 
 func initConfigMapCachingFlags() {
@@ -101,10 +118,10 @@ func initDeferredLoadingFlags() {
 }
 
 func initCosignFlags() {
-	flag.StringVar(&imageSignatureRepository, "imageSignatureRepository", "", "(DEPRECATED, will be removed in 1.12) Alternate repository for image signatures. Can be overridden per rule via `verifyImages.Repository`.")
 	flag.BoolVar(&enableTUF, "enableTuf", false, "enable tuf for private sigstore deployments")
 	flag.StringVar(&tufMirror, "tufMirror", tuf.DefaultRemoteRoot, "Alternate TUF mirror for sigstore. If left blank, public sigstore one is used for cosign verification.")
-	flag.StringVar(&tufRoot, "tufRoot", "", "Alternate TUF root.json for sigstore. If left blank, public sigstore one is used for cosign verification.")
+	flag.StringVar(&tufRoot, "tufRoot", "", "Path to alternate TUF root.json for sigstore (url or env). If left blank, public sigstore one is used for cosign verification.")
+	flag.StringVar(&tufRootRaw, "tufRootRaw", "", "The raw body of alternate TUF root.json for sigstore. If left blank, public sigstore one is used for cosign verification.")
 }
 
 func initRegistryClientFlags() {
@@ -114,24 +131,42 @@ func initRegistryClientFlags() {
 }
 
 func initImageVerifyCacheFlags() {
-	flag.BoolVar(&imageVerifyCacheEnabled, "imageVerifyCacheEnabled", true, "Whether to use a TTL cache for storing verified images.")
-	flag.Int64Var(&imageVerifyCacheMaxSize, "imageVerifyCacheMaxSize", 1000, "Max size limit for the TTL cache, 0 means default 1000 size limit.")
-	flag.DurationVar(&imageVerifyCacheTTLDuration, "imageVerifyCacheTTLDuration", 60*time.Minute, "Max TTL value for a cache, 0 means default 1 hour TTL.")
+	flag.BoolVar(&imageVerifyCacheEnabled, "imageVerifyCacheEnabled", true, "Enable a TTL cache for verified images.")
+	flag.Int64Var(&imageVerifyCacheMaxSize, "imageVerifyCacheMaxSize", 1000, "Maximum number of keys that can be stored in the TTL cache. Keys are a combination of policy elements along with the image reference. Default is 1000. 0 sets the value to default.")
+	flag.DurationVar(&imageVerifyCacheTTLDuration, "imageVerifyCacheTTLDuration", 60*time.Minute, "Maximum TTL value for a cache expressed as duration. Default is 60m. 0 sets the value to default.")
 }
 
 func initLeaderElectionFlags() {
 	flag.DurationVar(&leaderElectionRetryPeriod, "leaderElectionRetryPeriod", leaderelection.DefaultRetryPeriod, "Configure leader election retry period.")
 }
 
+func initCleanupFlags() {
+	flag.StringVar(&cleanupServerPort, "cleanupServerPort", "9443", "kyverno cleanup server port, defaults to '9443'.")
+}
+
+func initReportingFlags() {
+	flag.StringVar(&enableReporting, "enableReporting", "validate,mutate,mutateExisting,generate,imageVerify", "Comma separated list to enables reporting for different rule types. (validate,mutate,mutateExisting,generate,imageVerify)")
+}
+
+func lookupKubeconfigFlag() {
+	if f := flag.Lookup("kubeconfig"); f != nil {
+		kubeconfig = f.Value.String()
+	}
+}
+
 type options struct {
 	clientRateLimitQPS   float64
 	clientRateLimitBurst int
+	eventsRateLimitQPS   float64
+	eventsRateLimitBurst int
 }
 
 func newOptions() options {
 	return options{
-		clientRateLimitQPS:   20,
-		clientRateLimitBurst: 50,
+		clientRateLimitQPS:   100,
+		clientRateLimitBurst: 200,
+		eventsRateLimitQPS:   1000,
+		eventsRateLimitBurst: 2000,
 	}
 }
 
@@ -172,7 +207,7 @@ func initFlags(config Configuration, opts ...Option) {
 	}
 	// kubeconfig
 	if config.UsesKubeconfig() {
-		initKubeconfigFlags(options.clientRateLimitQPS, options.clientRateLimitBurst)
+		initKubeconfigFlags(options.clientRateLimitQPS, options.clientRateLimitBurst, options.eventsRateLimitQPS, options.eventsRateLimitBurst)
 	}
 	// policy exceptions
 	if config.UsesPolicyExceptions() {
@@ -202,6 +237,11 @@ func initFlags(config Configuration, opts ...Option) {
 	if config.UsesLeaderElection() {
 		initLeaderElectionFlags()
 	}
+	// reporting
+	if config.UsesReporting() {
+		initReportingFlags()
+	}
+	initCleanupFlags()
 	for _, flagset := range config.FlagSets() {
 		flagset.VisitAll(func(f *flag.Flag) {
 			flag.CommandLine.Var(f.Value, f.Name, f.Usage)
@@ -210,16 +250,12 @@ func initFlags(config Configuration, opts ...Option) {
 }
 
 func showWarnings(config Configuration, logger logr.Logger) {
-	if config.UsesCosign() {
-		if imageSignatureRepository != "" {
-			logger.Info("Warning: imageSignatureRepository is deprecated and will be removed in 1.12. Use per rule configuration `verifyImages.Repository` instead.")
-		}
-	}
 }
 
 func ParseFlags(config Configuration, opts ...Option) {
 	initFlags(config, opts...)
 	flag.Parse()
+	lookupKubeconfigFlag()
 }
 
 func ExceptionNamespace() string {
@@ -232,6 +268,14 @@ func PolicyExceptionEnabled() bool {
 
 func LeaderElectionRetryPeriod() time.Duration {
 	return leaderElectionRetryPeriod
+}
+
+func CleanupServerPort() string {
+	return cleanupServerPort
+}
+
+func GlobalContextEnabled() bool {
+	return enableGlobalContext
 }
 
 func printFlagSettings(logger logr.Logger) {

@@ -8,14 +8,15 @@ import (
 	"github.com/go-git/go-billy/v5"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/apis/v1alpha1"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/command"
+	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/deprecations"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/output/color"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/output/table"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/report"
-	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/store"
 	"github.com/kyverno/kyverno/cmd/cli/kubectl-kyverno/test/filter"
 	engineapi "github.com/kyverno/kyverno/pkg/engine/api"
+	"github.com/sergi/go-diff/diffmatchpatch"
 	"github.com/spf13/cobra"
-	"k8s.io/client-go/tools/cache"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 func Command() *cobra.Command {
@@ -30,9 +31,8 @@ func Command() *cobra.Command {
 		Args:         cobra.MinimumNArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, dirPath []string) (err error) {
-			color.InitColors(removeColor)
-			store.SetRegistryAccess(registryAccess)
-			return testCommandExecute(cmd.OutOrStdout(), dirPath, fileName, gitBranch, testCase, failOnly, detailedResults)
+			color.Init(removeColor)
+			return testCommandExecute(cmd.OutOrStdout(), dirPath, fileName, gitBranch, testCase, registryAccess, failOnly, detailedResults)
 		},
 	}
 	cmd.Flags().StringVarP(&fileName, "file-name", "f", "kyverno-test.yaml", "Test filename")
@@ -57,6 +57,7 @@ func testCommandExecute(
 	fileName string,
 	gitBranch string,
 	testCase string,
+	registryAccess bool,
 	failOnly bool,
 	detailedResults bool,
 ) (err error) {
@@ -101,9 +102,10 @@ func testCommandExecute(
 		}
 	}
 	rc := &resultCounts{}
-	var table table.Table
+	var fullTable table.Table
 	for _, test := range tests {
 		if test.Err == nil {
+			deprecations.CheckTest(out, test.Path, test.Test)
 			// filter results
 			var filteredResults []v1alpha1.TestResult
 			for _, res := range test.Test.Results {
@@ -115,16 +117,23 @@ func testCommandExecute(
 				continue
 			}
 			resourcePath := filepath.Dir(test.Path)
-			responses, err := runTest(out, test, false)
+			responses, err := runTest(out, test, registryAccess)
 			if err != nil {
 				return fmt.Errorf("failed to run test (%w)", err)
 			}
 			fmt.Fprintln(out, "  Checking results ...")
-			t, err := printTestResult(out, filteredResults, responses, rc, failOnly, detailedResults, test.Fs, resourcePath)
-			if err != nil {
+			var resultsTable table.Table
+			if err := printTestResult(filteredResults, responses, rc, &resultsTable, test.Fs, resourcePath); err != nil {
 				return fmt.Errorf("failed to print test result (%w)", err)
 			}
-			table.AddFailed(t.RawRows...)
+			if err := printCheckResult(test.Test.Checks, *responses, rc, &resultsTable); err != nil {
+				return fmt.Errorf("failed to print test result (%w)", err)
+			}
+			fullTable.AddFailed(resultsTable.RawRows...)
+			printer := table.NewTablePrinter(out)
+			fmt.Fprintln(out)
+			printer.Print(resultsTable.Rows(detailedResults))
+			fmt.Fprintln(out)
 		}
 	}
 	if !failOnly {
@@ -135,14 +144,14 @@ func testCommandExecute(
 	fmt.Fprintln(out)
 	if rc.Fail > 0 {
 		if !failOnly {
-			printFailedTestResult(out, table, detailedResults)
+			printFailedTestResult(out, fullTable, detailedResults)
 		}
 		return fmt.Errorf("%d tests failed", rc.Fail)
 	}
 	return nil
 }
 
-func checkResult(test v1alpha1.TestResult, fs billy.Filesystem, resoucePath string, response engineapi.EngineResponse, rule engineapi.RuleResponse) (bool, string, string) {
+func checkResult(test v1alpha1.TestResult, fs billy.Filesystem, resoucePath string, response engineapi.EngineResponse, rule engineapi.RuleResponse, actualResource unstructured.Unstructured) (bool, string, string) {
 	expected := test.Result
 	// fallback to the deprecated field
 	if expected == "" {
@@ -150,21 +159,25 @@ func checkResult(test v1alpha1.TestResult, fs billy.Filesystem, resoucePath stri
 	}
 	// fallback on deprecated field
 	if test.PatchedResource != "" {
-		equals, err := getAndCompareResource(response.PatchedResource, fs, filepath.Join(resoucePath, test.PatchedResource))
+		equals, diff, err := getAndCompareResource(actualResource, fs, filepath.Join(resoucePath, test.PatchedResource))
 		if err != nil {
 			return false, err.Error(), "Resource error"
 		}
 		if !equals {
-			return false, "Patched resource didn't match the patched resource in the test result", "Resource diff"
+			dmp := diffmatchpatch.New()
+			legend := dmp.DiffPrettyText(dmp.DiffMain("only in expected", "only in actual", false))
+			return false, fmt.Sprintf("Patched resource didn't match the patched resource in the test result\n(%s)\n\n%s", legend, diff), "Resource diff"
 		}
 	}
 	if test.GeneratedResource != "" {
-		equals, err := getAndCompareResource(rule.GeneratedResource(), fs, filepath.Join(resoucePath, test.GeneratedResource))
+		equals, diff, err := getAndCompareResource(actualResource, fs, filepath.Join(resoucePath, test.GeneratedResource))
 		if err != nil {
 			return false, err.Error(), "Resource error"
 		}
 		if !equals {
-			return false, "Generated resource didn't match the generated resource in the test result", "Resource diff"
+			dmp := diffmatchpatch.New()
+			legend := dmp.DiffPrettyText(dmp.DiffMain("only in expected", "only in actual", false))
+			return false, fmt.Sprintf("Patched resource didn't match the generated resource in the test result\n(%s)\n\n%s", legend, diff), "Resource diff"
 		}
 	}
 	result := report.ComputePolicyReportResult(false, response, rule)
@@ -174,31 +187,10 @@ func checkResult(test v1alpha1.TestResult, fs billy.Filesystem, resoucePath stri
 	return true, result.Message, "Ok"
 }
 
-func lookupEngineResponses(test v1alpha1.TestResult, resourceName string, responses ...engineapi.EngineResponse) []engineapi.EngineResponse {
-	var matches []engineapi.EngineResponse
-	for _, response := range responses {
-		policy := response.Policy()
-		resource := response.Resource
-		pName := cache.MetaObjectToName(policy.MetaObject()).String()
-		rName := cache.MetaObjectToName(&resource).String()
-		if test.Kind != resource.GetKind() {
-			continue
-		}
-		if pName != test.Policy {
-			continue
-		}
-		if resourceName != "" && rName != resourceName && resource.GetName() != resourceName {
-			continue
-		}
-		matches = append(matches, response)
-	}
-	return matches
-}
-
 func lookupRuleResponses(test v1alpha1.TestResult, responses ...engineapi.RuleResponse) []engineapi.RuleResponse {
 	var matches []engineapi.RuleResponse
 	// Since there are no rules in case of validating admission policies, responses are returned without checking rule names.
-	if test.IsValidatingAdmissionPolicy {
+	if test.IsValidatingAdmissionPolicy || test.IsValidatingPolicy {
 		matches = responses
 	} else {
 		for _, response := range responses {

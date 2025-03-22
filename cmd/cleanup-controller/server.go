@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/julienschmidt/httprouter"
+	"github.com/kyverno/kyverno/cmd/internal"
 	"github.com/kyverno/kyverno/pkg/config"
 	"github.com/kyverno/kyverno/pkg/logging"
 	"github.com/kyverno/kyverno/pkg/metrics"
@@ -17,9 +18,9 @@ import (
 
 type Server interface {
 	// Run TLS server in separate thread and returns control immediately
-	Run(<-chan struct{})
+	Run()
 	// Stop TLS server and returns control after the server is shut down
-	Stop(context.Context)
+	Stop()
 }
 
 type server struct {
@@ -75,7 +76,7 @@ func NewServer(
 	mux.HandlerFunc("GET", config.ReadinessServicePath, handlers.Probe(probes.IsReady))
 	return &server{
 		server: &http.Server{
-			Addr: ":9443",
+			Addr: ":" + internal.CleanupServerPort(),
 			TLSConfig: &tls.Config{
 				GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 					certPem, keyPem, err := tlsProvider()
@@ -109,7 +110,7 @@ func NewServer(
 	}
 }
 
-func (s *server) Run(stopCh <-chan struct{}) {
+func (s *server) Run() {
 	go func() {
 		if err := s.server.ListenAndServeTLS("", ""); err != nil {
 			logging.Error(err, "failed to start server")
@@ -117,7 +118,9 @@ func (s *server) Run(stopCh <-chan struct{}) {
 	}()
 }
 
-func (s *server) Stop(ctx context.Context) {
+func (s *server) Stop() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	err := s.server.Shutdown(ctx)
 	if err != nil {
 		err = s.server.Close()
